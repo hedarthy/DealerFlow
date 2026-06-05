@@ -118,37 +118,63 @@ def compute_emas(ticker, _cache={}):
 
 
 _REGIME_PLAIN = {
-    "positive": "positive γ — dealers buy dips & sell rips, so expect mean-reversion / a grind toward the call wall",
+    "positive": "positive γ — dealers buy dips & sell rips, so expect mean-reversion and a range-bound grind",
     "negative": "negative γ — dealers chase price, so expect trending breakouts with follow-through",
 }
 
 
 def build_pick_message(rank, contract, keys, regime, mode, date):
-    tchar = "C" if contract["type"] == "call" else "P"
+    tchar = "CALL" if contract["type"] == "call" else "PUT"
+    spot = contract.get("spot", 0.0) or 0.0
     vanna_regime = contract.get("vanna_regime", "neutral")
     bullets = generate_strategy(contract, keys, regime, contract["score"], vanna_regime)
-    pa_label = contract.get("pa_label")
-    gd_label = contract.get("gd_label")
+
+    def rel(x):
+        if not x:
+            return "n/a"
+        if not spot:
+            return f"${x:.2f}"
+        return f"${x:.2f} ({(x / spot - 1) * 100:+.1f}%)"
+
+    strike = ("%g" % contract["strike"])
     msg = f"# 🔥 HIGH CONVICTION #{rank} — {mode.upper()} {date}\n"
-    msg += f"## {contract['ticker']} {contract['strike']:.2f}{tchar} {contract['exp']} — Score {contract['score']:.1f}\n"
-    bias = f"**Bias:** {pa_label} | " if pa_label and pa_label != "n/a" else ""
-    # Only surface the structural read when it actually confirmed the side (a pick is
-    # never opposed; neutral/abstain reads are omitted to avoid clutter).
-    structure = (f"**Structure:** {gd_label} | "
-                 if gd_label and contract.get("gd_pts", 0.0) > 0 else "")
-    msg += (f"**Regime:** {regime} (gamma) / {vanna_regime} (vanna) | {bias}{structure}**Edge:** {contract.get('edge', '-')} | "
-            f"**Est. Premium:** ${contract['premium_est']:.0f}K | **Vol/OI:** {contract['vol_oi']:.1f} | "
-            f"**OTM:** {contract['otm']:.1f}% | **DTE:** {contract.get('dte', '?')} | "
-            f"**Data:** {contract.get('source', 'yfinance')}\n")
+    msg += f"## {contract['ticker']} ${strike} {tchar} · exp {contract['exp']} · Score {contract['score']:.0f}\n"
     plain = _REGIME_PLAIN.get(regime)
-    if plain:
-        msg += f"_In plain English: {plain}._\n"
-    msg += (f"**Gamma levels:** flip {keys['gamma_flip']:.2f} · "
-            f"call wall {keys['call_wall']:.2f} · put wall {keys['put_wall']:.2f}\n")
-    msg += (f"**Vanna/Charm:** vanna flip {contract.get('vanna_flip', 0.0):.2f} · "
+    msg += f"**Spot ${spot:.2f}**" + (f" — {plain}.\n" if plain else "\n")
+    msg += (f"**Levels:** flip {rel(keys['gamma_flip'])} · call wall {rel(keys['call_wall'])} · "
+            f"put wall {rel(keys['put_wall'])}\n")
+    msg += "**Plan**\n" + "\n".join(f"- {b}" for b in bullets) + "\n"
+
+    # One compact confirmation line instead of four verbose bullets. Tailwinds go on
+    # the Confirms line; side-opposed reads (a put's "positive vanna", tangled EMAs)
+    # are surfaced separately as a Caution so nothing is mislabelled as confirmation.
+    is_call = contract["type"] == "call"
+    confirms, cautions = [], []
+    pa_label = contract.get("pa_label")
+    if pa_label and pa_label not in ("n/a", "EMAs mixed"):
+        confirms.append(pa_label)
+    elif pa_label == "EMAs mixed":
+        cautions.append("price tangled in 8/21 EMAs — no trend")
+    gd_label = contract.get("gd_label")
+    if gd_label and contract.get("gd_pts", 0.0) > 0:
+        confirms.append(gd_label)
+    if vanna_regime == "positive":
+        (confirms if is_call else cautions).append(
+            "vanna tailwind (IV drop → dealer buying)" if is_call
+            else "vanna headwind (IV drop → dealer buying lifts the underlying)")
+    elif vanna_regime == "negative":
+        (cautions if is_call else confirms).append(
+            "vanna headwind (IV drop → dealer selling)" if is_call
+            else "vanna tailwind (IV drop → dealer selling)")
+    if confirms:
+        msg += "**Confirms:** " + " · ".join(confirms) + "\n"
+    if cautions:
+        msg += "**Caution:** " + " · ".join(cautions) + "\n"
+
+    msg += (f"_Vol/OI {contract['vol_oi']:.1f} · OTM {contract['otm']:.1f}% · DTE {contract.get('dte', '?')} · "
+            f"~${contract['premium_est'] / 1000:.1f}M prem · {contract.get('source', 'yfinance')} · "
             f"Σvanna {contract.get('total_vex_m', 0.0):.1f}M/vol-pt · "
-            f"Σcharm {contract.get('total_cex_m', 0.0):.1f}M/day\n\n")
-    msg += "**Entry/Exit Strategy:**\n" + "\n".join(f"- {b}" for b in bullets)
+            f"Σcharm {contract.get('total_cex_m', 0.0):.1f}M/day_")
     return msg
 
 
@@ -332,6 +358,7 @@ def main(mode: str, force: bool = False):
                         "base_score": _f(base),
                         "edge": dominant_edge(comps, config["score_weights"]),
                         "moneyness": _f(comps["moneyness_dte"]),
+                        "em_pct": _f(em_pct),
                         "pa_label": pa_label,
                         "pa_pts": _f(pa_pts),
                         "pa_opposed": pa_pts < 0,
