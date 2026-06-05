@@ -97,9 +97,11 @@ swing methodology for higher-probability entries.
 │   ├── scorer.py                # composite score + EMA & GEX-structure overlays
 │   ├── strategy_generator.py    # entry/target/stop + vanna/charm + confirmation bullets
 │   ├── timeutil.py              # US/Eastern market-clock helper (UTC-runner safe)
+│   ├── market_calendar.py       # NYSE trading-day calendar + schedule gate (stdlib only)
 │   └── utils.py                 # persistence + Discord
 ├── tests/
-│   └── test_analysis.py         # offline overlay/scoring unit tests (no network)
+│   ├── test_analysis.py         # offline overlay/scoring unit tests (no network)
+│   └── test_schedule.py         # offline NYSE-calendar + cron-gate unit tests
 ├── config.json          # watchlist + thresholds + score weights
 ├── requirements.txt
 └── reports/             # artifacts (gitignored)
@@ -123,6 +125,45 @@ python -m src.daily_options_agent --mode=close
 ```
 
 Run from the repo root so the `src` package resolves.
+
+## Automation & scheduling
+
+Both runs are driven by GitHub Actions cron. Because GitHub cron is always in
+UTC, each workflow ships **two** cron entries — one correct for EDT (summer) and
+one for EST (winter) — and the agent gates itself to a single intended ET hour
+so exactly one of them does work each day, year-round:
+
+| Run | Intended (ET) | UTC crons (EDT / EST) |
+| --- | --- | --- |
+| Morning | 09:10 | `10 13 * * 1-5` / `10 14 * * 1-5` |
+| Close | 16:05 | `5 20 * * 1-5` / `5 21 * * 1-5` |
+
+The gate (`src/market_calendar.py` + the guard in `main()`):
+
+- **Skips non-trading days** — weekends and NYSE holidays (`is_trading_day`).
+- **Keys off the cron's *scheduled* ET hour, not the runner's start time** — so
+  the off-season (wrong-DST) cron always self-skips even if GitHub delays it into
+  the intended hour (no double-post), and the correct cron still owns the day even
+  if it starts late (no silent miss).
+- `--force` bypasses the gate. Manual `workflow_dispatch` passes `--force` by
+  default; scheduled runs do not.
+
+Reliability extras: a failed Discord post (or a missing webhook secret in CI)
+now fails the job instead of succeeding silently, and each workflow has an
+`if: failure()` step that pings Discord with the failed run's URL.
+
+> **Note on GitHub's scheduler.** Scheduled workflows are best-effort — GitHub
+> can delay or drop runs, and the *first* scheduled run of a newly-added cron is
+> the most likely to be skipped. The dual-cron + gate makes runs correct and
+> de-duplicated, but for hard guarantees trigger `workflow_dispatch` from an
+> external always-on scheduler.
+
+Offline tests (no network, stdlib only):
+
+```bash
+python tests/test_analysis.py     # scoring / overlay logic
+python tests/test_schedule.py     # NYSE calendar + cron gate
+```
 
 ## Configuration
 

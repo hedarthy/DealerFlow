@@ -19,22 +19,26 @@ def save_current_close(results):
 def send_discord(content, png_path=None):
     webhook = os.getenv("DISCORD_WEBHOOK_URL")
     if not webhook:
+        # In CI a missing webhook means the scheduled run would "succeed" while
+        # delivering nothing — fail loudly so it's visible. Locally, stay soft.
+        if os.getenv("GITHUB_ACTIONS"):
+            raise RuntimeError("DISCORD_WEBHOOK_URL is not set in CI; cannot post alerts")
         print("⚠️  DISCORD_WEBHOOK_URL not set; skipping Discord post")
         return
     content = (content or "")[:2000]
-    try:
-        if png_path and os.path.exists(png_path):
-            with open(png_path, "rb") as fh:
-                # Attach the image to the same message via multipart payload_json.
-                r = requests.post(
-                    webhook,
-                    data={"payload_json": json.dumps({"content": content})},
-                    files={"file": (os.path.basename(png_path), fh, "image/png")},
-                    timeout=30,
-                )
-        else:
-            r = requests.post(webhook, json={"content": content}, timeout=15)
-        print(f"Discord post: HTTP {r.status_code}")
-        r.raise_for_status()
-    except requests.RequestException as e:
-        print(f"⚠️  Discord post failed: {e}")
+    if png_path and os.path.exists(png_path):
+        with open(png_path, "rb") as fh:
+            # Attach the image to the same message via multipart payload_json.
+            r = requests.post(
+                webhook,
+                data={"payload_json": json.dumps({"content": content})},
+                files={"file": (os.path.basename(png_path), fh, "image/png")},
+                timeout=30,
+            )
+    else:
+        r = requests.post(webhook, json={"content": content}, timeout=15)
+    print(f"Discord post: HTTP {r.status_code}")
+    # Raise on any error status / network failure so an unattended CI run turns
+    # red (and triggers the workflow's on-failure alert) instead of silently
+    # "succeeding" with no message delivered.
+    r.raise_for_status()

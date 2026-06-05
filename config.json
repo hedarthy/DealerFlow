@@ -4,9 +4,9 @@
     "AAPL", "TSLA", "NVDA", "AMZN", "GOOGL", "META", "AMD", "SMCI",
     "AVGO", "MRVL", "MU", "TSM", "INTC", "QCOM", "TXN", "ADI", "KLAC", "AMAT", "LRCX", "ARM",
     "LITE", "COHR", "AAOI", "IPGP", "CIEN", "NOK",
-    "SOI", "SIVE", "TSEM", "IQE", "AXTI", "CRDO", "ALAB", "GLW",
+    "TSEM", "AXTI", "CRDO", "ALAB", "GLW",
     "AEHR", "ASML", "ONTO", "LWLG", "ALMU", "WOLF", "MRAM",
-    "LPK", "SVCO", "PENG", "TRT", "GFS", "UMC", "JBL", "CLS", "FLEX",
+    "PENG", "GFS", "UMC", "JBL", "CLS", "FLEX",
     "ANET", "VRT", "ASTS", "AMBQ"
   ],
   "dte_max": 2,
