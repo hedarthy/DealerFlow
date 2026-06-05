@@ -10,7 +10,10 @@ venv/
 
 # Generated artifacts
 report.md
-gex_heatmap.png
+gex_heatmap*.png
 previous_close.json
 reports/*
 !reports/.gitkeep
+
+# Agent working notes (local only)
+.sisyphus/

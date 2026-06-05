@@ -1,4 +1,4 @@
-def generate_strategy(contract, key_levels, regime, score):
+def generate_strategy(contract, key_levels, regime, score, vanna_regime="neutral"):
     is_call = contract["type"] == "call"
     flip = key_levels.get("gamma_flip", 0.0)
     call_wall = key_levels.get("call_wall", 0.0)
@@ -19,4 +19,13 @@ def generate_strategy(contract, key_levels, regime, score):
     bullets.append(f"**Target:** {lvl(target)} or 0.8-1.5% move (regime-supported)")
     stop = put_wall if is_call else call_wall
     bullets.append(f"**Stop:** Below {lvl(stop)} - invalidates dealer positioning")
+
+    if vanna_regime == "positive":
+        bullets.append("**Vanna:** Net-positive dealer vanna - an IV drop forces dealer buying "
+                       "(price support; tailwind for calls). Dealers sell into an IV pop.")
+    elif vanna_regime == "negative":
+        bullets.append("**Vanna:** Net-negative dealer vanna - an IV drop forces dealer selling "
+                       "(price pressure; headwind for calls). Dealers buy into an IV pop.")
+    bullets.append("**Charm:** Delta decay accelerates into expiry/EOD - dealer re-hedging "
+                   "favours decisive intraday continuation")
     return bullets

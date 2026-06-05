@@ -24,4 +24,4 @@ jobs:
           name: close-report
           path: |
             report.md
-            gex_heatmap.png
+            gex_heatmap_*.png
