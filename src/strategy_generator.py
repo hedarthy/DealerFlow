@@ -28,4 +28,16 @@ def generate_strategy(contract, key_levels, regime, score, vanna_regime="neutral
                        "(price pressure; headwind for calls). Dealers buy into an IV pop.")
     bullets.append("**Charm:** Delta decay accelerates into expiry/EOD - dealer re-hedging "
                    "favours decisive intraday continuation")
+
+    pa_label = contract.get("pa_label")
+    ema8, ema21 = contract.get("ema8"), contract.get("ema21")
+    if pa_label and pa_label not in ("n/a", "EMAs mixed"):
+        if ema8 and ema21:
+            bullets.append(f"**Price-Action ({pa_label}):** spot vs 8EMA {ema8:.2f} / 21EMA "
+                           f"{ema21:.2f} — aligned with the SeanTrades momentum stack")
+        else:
+            bullets.append(f"**Price-Action:** {pa_label} — aligned with the SeanTrades momentum stack")
+    elif pa_label == "EMAs mixed":
+        bullets.append("**Price-Action:** price is tangled in the 8/21 EMAs — no momentum "
+                       "confirmation, size down")
     return bullets
