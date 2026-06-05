@@ -11,7 +11,7 @@ from src.gex_calculator import (
     compute_exposure_grids, cumulative_zero_cross,
     get_key_levels, get_regime, get_vanna_regime, _expiry_T,
 )
-from src.scorer import score_components, weighted_score, dominant_edge
+from src.scorer import score_components, weighted_score, dominant_edge, price_action_adjustment
 from src.strategy_generator import generate_strategy
 from src.utils import load_previous_close, save_current_close, send_discord
 from src.cboe_source import fetch_cboe
@@ -87,16 +87,55 @@ def _expected_move_pct(df, spot, exp_str):
     return best_iv * (T ** 0.5) * 100.0
 
 
+def compute_emas(ticker, _cache={}):
+    """8/21-period EMA of daily closes (the SeanTrades momentum stack), cached per ticker.
+
+    Uses yfinance daily history regardless of the quote source, because CBOE's
+    delayed-quote feed carries no price history. Returns ``(ema8, ema21, last_close)``;
+    the EMAs are ``None`` when history is missing or too short for a stable 21-period
+    EMA (the price-action overlay then abstains), and ``last_close`` is returned
+    whenever any history exists so the caller can sanity-check the live spot against it.
+    ``adjust=False`` gives the conventional recursive trading EMA.
+    """
+    if ticker in _cache:
+        return _cache[ticker]
+    res = (None, None, None)
+    try:
+        hist = yf.Ticker(ticker).history(period="3mo")
+        close = hist["Close"].dropna() if not hist.empty else None
+        if close is not None and len(close) >= 21:
+            ema8 = float(close.ewm(span=8, adjust=False).mean().iloc[-1])
+            ema21 = float(close.ewm(span=21, adjust=False).mean().iloc[-1])
+            res = (ema8, ema21, float(close.iloc[-1]))
+        elif close is not None and len(close) >= 1:
+            res = (None, None, float(close.iloc[-1]))
+    except Exception:
+        res = (None, None, None)
+    _cache[ticker] = res
+    return res
+
+
+_REGIME_PLAIN = {
+    "positive": "positive γ — dealers buy dips & sell rips, so expect mean-reversion / a grind toward the call wall",
+    "negative": "negative γ — dealers chase price, so expect trending breakouts with follow-through",
+}
+
+
 def build_pick_message(rank, contract, keys, regime, mode, date):
     tchar = "C" if contract["type"] == "call" else "P"
     vanna_regime = contract.get("vanna_regime", "neutral")
     bullets = generate_strategy(contract, keys, regime, contract["score"], vanna_regime)
+    pa_label = contract.get("pa_label")
     msg = f"# 🔥 HIGH CONVICTION #{rank} — {mode.upper()} {date}\n"
     msg += f"## {contract['ticker']} {contract['strike']:.2f}{tchar} {contract['exp']} — Score {contract['score']:.1f}\n"
-    msg += (f"**Regime:** {regime} (gamma) / {vanna_regime} (vanna) | **Edge:** {contract.get('edge', '-')} | "
+    bias = f"**Bias:** {pa_label} | " if pa_label and pa_label != "n/a" else ""
+    msg += (f"**Regime:** {regime} (gamma) / {vanna_regime} (vanna) | {bias}**Edge:** {contract.get('edge', '-')} | "
             f"**Est. Premium:** ${contract['premium_est']:.0f}K | **Vol/OI:** {contract['vol_oi']:.1f} | "
             f"**OTM:** {contract['otm']:.1f}% | **DTE:** {contract.get('dte', '?')} | "
             f"**Data:** {contract.get('source', 'yfinance')}\n")
+    plain = _REGIME_PLAIN.get(regime)
+    if plain:
+        msg += f"_In plain English: {plain}._\n"
     msg += (f"**Gamma levels:** flip {keys['gamma_flip']:.2f} · "
             f"call wall {keys['call_wall']:.2f} · put wall {keys['put_wall']:.2f}\n")
     msg += (f"**Vanna/Charm:** vanna flip {contract.get('vanna_flip', 0.0):.2f} · "
@@ -159,7 +198,9 @@ def get_chains(ticker):
 def main(mode: str):
     print(f"🚀 Running {mode.upper()} mode at {datetime.now()}")
     results = []
+    source_counts = {}
     previous = load_previous_close() if mode == "morning" else None
+    pa_enabled = bool(config.get("enable_price_action_filter", False))
 
     for ticker in config["watchlist"]:
         try:
@@ -168,6 +209,15 @@ def main(mode: str):
                 print(f"Skipping {ticker}: no data")
                 continue
             spot, chains, source = got
+            source_counts[source] = source_counts.get(source, 0) + 1
+            # SeanTrades-style price-action stack: computed once per ticker (cached),
+            # off the daily-close history. Drives the additive confirmation overlay and
+            # the high-conviction trend gate below. The last close also lets us sanity-
+            # check the CBOE spot — a large divergence flags a stale quote.
+            ema8, ema21, last_close = compute_emas(ticker) if pa_enabled else (None, None, None)
+            if last_close and spot and abs(spot / last_close - 1.0) > 0.25:
+                print(f"⚠️  {ticker}: {source} spot {spot:.2f} diverges >25% from prior "
+                      f"close {last_close:.2f} — possible stale quote")
             for exp_str, df in sorted(chains.items()):
                 # Skip anything outside the DTE window, and any same-day expiry that
                 # has already passed today's 16:00 close (a 0-DTE close run must not
@@ -213,56 +263,88 @@ def main(mode: str):
                         vanna_ex=strike_vex, charm_ex=strike_cex,
                         max_vex=max_vex, max_cex=max_cex,
                     )
-                    score = weighted_score(comps, config["score_weights"])
-                    if score >= 60:
-                        contract = {
-                            "ticker": ticker,
-                            "strike": strike,
-                            "type": row.get("opt_type", "call"),
-                            "exp": exp_str,
-                            "dte": dte,
-                            "spot": _f(spot),
-                            "source": source,
-                            "score": _f(score),
-                            "edge": dominant_edge(comps, config["score_weights"]),
-                            "premium_est": _f(premium_est),
-                            "vol_oi": _f(vol / oi) if oi else 0.0,
-                            "otm": _f(abs(strike - spot) / spot * 100) if spot else 0.0,
-                            "vanna_regime": vanna_regime,
-                            "vanna_flip": _f(vanna_flip),
-                            "total_vex_m": _f(total_vex_m),
-                            "total_cex_m": _f(total_cex_m),
-                            "vanna_ex": _f(strike_vex),
-                            "charm_ex": _f(strike_cex),
-                        }
-                        results.append((contract, gex_grid, vex_grid, key_levels, regime))
+                    base = weighted_score(comps, config["score_weights"])
+                    # Dealer-greek gate first: the price-action overlay CONFIRMS strong
+                    # setups and ranks them, it does not rescue weak ones over the line.
+                    if base < 60:
+                        continue
+                    opt_type = row.get("opt_type", "call")
+                    pa_pts, pa_label = (price_action_adjustment(opt_type, spot, ema8, ema21)
+                                        if pa_enabled else (0.0, None))
+                    raw = base + pa_pts          # rank on the raw overlay-adjusted value
+                    score = min(100.0, max(0.0, raw))  # display/threshold value, clamped
+                    contract = {
+                        "ticker": ticker,
+                        "strike": strike,
+                        "type": opt_type,
+                        "exp": exp_str,
+                        "dte": dte,
+                        "spot": _f(spot),
+                        "source": source,
+                        "score": _f(score),
+                        "rank_score": _f(raw),
+                        "base_score": _f(base),
+                        "edge": dominant_edge(comps, config["score_weights"]),
+                        "pa_label": pa_label,
+                        "pa_pts": _f(pa_pts),
+                        "pa_opposed": pa_pts < 0,
+                        "ema8": ema8,
+                        "ema21": ema21,
+                        "premium_est": _f(premium_est),
+                        "vol_oi": _f(vol / oi) if oi else 0.0,
+                        "otm": _f(abs(strike - spot) / spot * 100) if spot else 0.0,
+                        "vanna_regime": vanna_regime,
+                        "vanna_flip": _f(vanna_flip),
+                        "total_vex_m": _f(total_vex_m),
+                        "total_cex_m": _f(total_cex_m),
+                        "vanna_ex": _f(strike_vex),
+                        "charm_ex": _f(strike_cex),
+                    }
+                    results.append((contract, gex_grid, vex_grid, key_levels, regime))
             time.sleep(0.5)  # gentle pacing across the watchlist
         except Exception as e:
             print(f"Skipping {ticker}: {e}")
             continue
 
-    # Sort all candidates by score, then keep only each ticker's single best contract
-    # so the two high-conviction picks — and the additional-candidates table — are
-    # diversified across underlyings. This is the guardrail that prevents e.g. both
-    # picks being META (640C and 650C); META takes one slot, the next pick must be a
-    # different ticker.
-    results.sort(key=lambda x: x[0]["score"], reverse=True)
-    best_by_ticker, seen = [], set()
-    for r in results:
-        tk = r[0]["ticker"]
-        if tk not in seen:
-            seen.add(tk)
-            best_by_ticker.append(r)
+    # Rank on the raw overlay-adjusted score so a strong, trend-confirmed name isn't
+    # flattened against the 100 ceiling, then keep each ticker's single best contract.
+    results.sort(key=lambda x: x[0]["rank_score"], reverse=True)
+
+    def _dedupe_by_ticker(rows):
+        out, seen = [], set()
+        for r in rows:
+            tk = r[0]["ticker"]
+            if tk not in seen:
+                seen.add(tk)
+                out.append(r)
+        return out
+
     cutoff = config["high_conviction_cutoff"]
-    high_conv = [r for r in best_by_ticker if r[0]["score"] >= cutoff][:2]
+    # High conviction: clear the cutoff AND not fight the EMA trend. We gate BEFORE the
+    # per-ticker dedupe so a ticker whose top raw contract is counter-trend still
+    # contributes its best *trend-aligned* contract instead of being dropped entirely.
+    eligible_high = [r for r in results
+                     if r[0]["score"] >= cutoff and not r[0].get("pa_opposed")]
+    high_conv = _dedupe_by_ticker(eligible_high)[:2]
     high_tickers = {r[0]["ticker"] for r in high_conv}
-    lower_conv = [r for r in best_by_ticker
+    # Additional candidates: trend-aligned / neutral names only (counter-trend setups
+    # are not surfaced), one row per remaining ticker.
+    non_opposed = [r for r in results if not r[0].get("pa_opposed")]
+    lower_conv = [r for r in _dedupe_by_ticker(non_opposed)
                   if r[0]["ticker"] not in high_tickers and r[0]["score"] >= 60][:8]
 
     date = datetime.now().date()
-    sections = [f"# 🚀 Options High-Conviction Screener\n**Run:** {mode.upper()} | **Date:** {date}\n"]
+    header = f"# 🚀 Options High-Conviction Screener\n**Run:** {mode.upper()} | **Date:** {date}\n"
+    if pa_enabled:
+        header += ("**Screen:** high relative-volume momentum names (AI/semis/photonics watchlist), "
+                   "with high-conviction picks confirmed by the 8/21 EMA price-action stack "
+                   "(SeanTrades-style).\n")
+    sections = [header]
     if mode == "morning" and previous:
         sections.append("**MORNING UPDATE** – Pre-market spot applied + GEX shift alerts\n")
+    if mode == "morning" and pa_enabled:
+        sections.append("**Price-action check:** only setups aligned with the 8/21 EMA stack "
+                        "are eligible for high conviction.\n")
 
     # Messages 1 & 2: each high-conviction pick gets its own gamma+vanna heatmap.
     for i, (contract, gex_grid, vex_grid, keys, regime) in enumerate(high_conv, 1):
@@ -289,6 +371,8 @@ def main(mode: str):
         f.write("\n\n".join(sections))
 
     save_current_close(results)
+    coverage = ", ".join(f"{k}={v}" for k, v in sorted(source_counts.items())) or "none"
+    print(f"📡 Quote sources: {coverage} (CBOE preferred; yfinance powers EMA history)")
     print("✅ Reports generated, heatmaps saved, Discord messages sent")
 
 

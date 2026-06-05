@@ -81,6 +81,33 @@ def dominant_edge(components, weights):
     return _EDGE_LABEL[max(contrib, key=contrib.get)]
 
 
+def price_action_adjustment(opt_type, spot, ema8, ema21,
+                            align_bonus=12.0, oppose_penalty=15.0, tol=0.001):
+    """SeanTrades 8/21 EMA-stack confirmation, returned as additive score points.
+
+    A bullish stack (spot > ema8 > ema21) confirms calls and opposes puts; a bearish
+    stack (spot < ema8 < ema21) confirms puts and opposes calls; price tangled in the
+    EMAs is "mixed" (no opinion). A small ``tol`` band keeps a spot sitting right on an
+    EMA from flip-flopping the signal. This is layered as an additive overlay rather
+    than a weighted component so it can be toggled off without disturbing the normalised
+    component weights — a confirmed trade is nudged up, a counter-trend one docked and
+    (in the agent) barred from the top-two high-conviction picks.
+
+    Returns ``(points, label)``: points > 0 confirms, < 0 opposes, 0 is neutral.
+    """
+    s, e8, e21 = _num(spot), _num(ema8), _num(ema21)
+    if s <= 0 or e8 <= 0 or e21 <= 0:
+        return 0.0, "n/a"
+    is_call = str(opt_type).lower().startswith("c")
+    if s > e8 * (1 + tol) and e8 > e21 * (1 + tol):
+        return (align_bonus, "8/21 bull stack ✓") if is_call \
+            else (-oppose_penalty, "counter 8/21 bull stack ✗")
+    if s < e8 * (1 - tol) and e8 < e21 * (1 - tol):
+        return (align_bonus, "8/21 bear stack ✓") if not is_call \
+            else (-oppose_penalty, "counter 8/21 bear stack ✗")
+    return 0.0, "EMAs mixed"
+
+
 def compute_composite_score(row, spot, weights, dte=1, gex_balance=0.0, em_pct=0.0,
                             vanna_ex=0.0, charm_ex=0.0, max_vex=0.0, max_cex=0.0):
     """Composite 0-100 score; thin wrapper over score_components + weighted_score."""

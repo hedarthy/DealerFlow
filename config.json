@@ -13,6 +13,7 @@
   "min_volume": 500,
   "min_premium_k": 25,
   "high_conviction_cutoff": 75,
+  "enable_price_action_filter": true,
   "score_weights": {
     "gex_regime": 0.20,
     "flow_proxy": 0.25,
