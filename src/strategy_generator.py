@@ -1,48 +1,93 @@
 def generate_strategy(contract, key_levels, regime, score, vanna_regime="neutral"):
     is_call = contract["type"] == "call"
-    flip = key_levels.get("gamma_flip", 0.0)
-    call_wall = key_levels.get("call_wall", 0.0)
-    put_wall = key_levels.get("put_wall", 0.0)
+    spot = contract.get("spot", 0.0) or 0.0
+    em = contract.get("em_pct", 0.0) or 0.0       # ATM expected move %, e.g. 1.2
+    flip = key_levels.get("gamma_flip", 0.0) or 0.0
+    call_wall = key_levels.get("call_wall", 0.0) or 0.0
+    put_wall = key_levels.get("put_wall", 0.0) or 0.0
 
-    def lvl(x):
-        return f"{x:.2f}" if x else "n/a"
+    def rel(x):
+        """A level shown as price + signed distance from the current spot."""
+        if not x:
+            return "n/a"
+        if not spot:
+            return f"${x:.2f}"
+        return f"${x:.2f} ({(x / spot - 1) * 100:+.1f}%)"
 
-    bullets = []
-    if is_call and regime == "positive":
-        entry = f"Buy on break above gamma flip ({lvl(flip)}) with positive GEX confirmation"
-    elif is_call and regime == "negative":
-        entry = f"Buy on break above call wall ({lvl(call_wall)}) in trending regime"
-    else:
-        entry = f"Buy on break below gamma flip ({lvl(flip)}) with negative GEX confirmation"
-    bullets.append(f"**Entry:** {entry}")
-    target = call_wall if is_call else put_wall
-    bullets.append(f"**Target:** {lvl(target)} or 0.8-1.5% move (regime-supported)")
-    stop = put_wall if is_call else call_wall
-    bullets.append(f"**Stop:** Below {lvl(stop)} - invalidates dealer positioning")
+    # Without a spot we cannot anchor anything — degrade rather than emit a $0 plan.
+    if not spot:
+        return ["**Plan:** insufficient data — no spot price to anchor entry/exit."]
 
-    if vanna_regime == "positive":
-        bullets.append("**Vanna:** Net-positive dealer vanna - an IV drop forces dealer buying "
-                       "(price support; tailwind for calls). Dealers sell into an IV pop.")
-    elif vanna_regime == "negative":
-        bullets.append("**Vanna:** Net-negative dealer vanna - an IV drop forces dealer selling "
-                       "(price pressure; headwind for calls). Dealers buy into an IV pop.")
-    bullets.append("**Charm:** Delta decay accelerates into expiry/EOD - dealer re-hedging "
-                   "favours decisive intraday continuation")
+    em = max(em, 0.8)               # floor the expected move so targets aren't trivially tight
+    momentum = (regime == "negative")
+    trigger = call_wall if is_call else put_wall   # the breakout level in momentum regime
 
-    pa_label = contract.get("pa_label")
-    ema8, ema21 = contract.get("ema8"), contract.get("ema21")
-    if pa_label and pa_label not in ("n/a", "EMAs mixed"):
-        if ema8 and ema21:
-            bullets.append(f"**Price-Action ({pa_label}):** spot vs 8EMA {ema8:.2f} / 21EMA "
-                           f"{ema21:.2f} — aligned with the SeanTrades momentum stack")
+    # --- Entry, anchored to where price is right now ---
+    if is_call:
+        if momentum:
+            entry = (f"momentum — long only on a break and hold above {rel(trigger)}" if trigger
+                     else "momentum — long only on a confirmed breakout (no call wall computed)")
+        elif call_wall and spot >= call_wall:
+            entry = f"don't chase — spot ${spot:.2f} is at the call wall {rel(call_wall)}; wait for a pullback that holds"
+        elif flip and spot <= flip:
+            entry = f"stand aside — below the gamma flip {rel(flip)}; wait for a reclaim before going long"
         else:
-            bullets.append(f"**Price-Action:** {pa_label} — aligned with the SeanTrades momentum stack")
-    elif pa_label == "EMAs mixed":
-        bullets.append("**Price-Action:** price is tangled in the 8/21 EMAs — no momentum "
-                       "confirmation, size down")
+            entry = f"long near ${spot:.2f} — above the flip; buy dips, scale toward the call wall {rel(call_wall)}"
+    else:
+        if momentum:
+            entry = (f"momentum — short only on a break and hold below {rel(trigger)}" if trigger
+                     else "momentum — short only on a confirmed breakdown (no put wall computed)")
+        elif put_wall and spot <= put_wall:
+            entry = f"don't chase — spot ${spot:.2f} is at the put wall {rel(put_wall)}; wait for a failed bounce"
+        elif flip and spot >= flip:
+            entry = f"stand aside — above the gamma flip {rel(flip)}; wait for a loss before going short"
+        else:
+            entry = f"short near ${spot:.2f} — below the flip; sell rips, scale toward the put wall {rel(put_wall)}"
 
-    gd_label = contract.get("gd_label")
-    if gd_label and contract.get("gd_pts", 0.0) > 0:
-        bullets.append(f"**Dealer Structure:** {gd_label} — positioned *with* dealer gamma, "
-                       "not chasing into a wall")
+    # --- Target ---
+    # Positive (mean-reversion) regime: the same-side wall is a magnet to scale into.
+    # Negative (momentum) regime: the wall is just the breakout trigger, so project ~one
+    # expected move *beyond* it rather than stalling at it.
+    if momentum:
+        base = trigger if trigger else spot
+        tgt = base * (1 + em / 100) if is_call else base * (1 - em / 100)
+        target = f"{rel(tgt)} ≈ one move past the trigger — trend, trail it"
+    else:
+        tgt_is_wall = bool(call_wall and call_wall > spot) if is_call else bool(put_wall and put_wall < spot)
+        if tgt_is_wall:
+            tgt = call_wall if is_call else put_wall
+            target = f"{rel(tgt)} {'call' if is_call else 'put'}-wall magnet — scale out into it"
+        else:
+            tgt = spot * (1 + em / 100) if is_call else spot * (1 - em / 100)
+            target = f"{rel(tgt)} ≈ one expected move — trail the move"
+
+    # --- Stop: the NEAREST invalidation level on the risk side of spot ---
+    if is_call:
+        below = [lv for lv in (flip, put_wall) if lv and lv < spot]
+        stop = max(below) if below else 0.0
+        kind = "the gamma flip" if (stop and stop == flip) else "dealer support"
+    else:
+        above = [lv for lv in (flip, call_wall) if lv and lv > spot]
+        stop = min(above) if above else 0.0
+        kind = "the gamma flip" if (stop and stop == flip) else "dealer resistance"
+    stop_txt = (f"{rel(stop)} — loss of {kind}" if stop
+                else f"a decisive move back through the gamma flip {rel(flip)}")
+
+    bullets = [
+        f"**Entry:** {entry}",
+        f"**Target:** {target}",
+        f"**Stop:** {stop_txt}",
+    ]
+
+    # --- R/R: only when the geometry is valid (target & stop on the correct sides) ---
+    geometry_ok = bool(stop and tgt and (
+        (is_call and tgt > spot and stop < spot) or
+        (not is_call and tgt < spot and stop > spot)))
+    if geometry_ok:
+        reward = abs(tgt / spot - 1) * 100
+        risk = abs(stop / spot - 1) * 100
+        if risk > 0:
+            rr = reward / risk
+            tail = "" if rr >= 1.5 else " — thin, size down"
+            bullets.append(f"**R/R:** ≈{rr:.1f}:1 ({reward:.1f}% to target vs {risk:.1f}% to stop){tail}")
     return bullets
