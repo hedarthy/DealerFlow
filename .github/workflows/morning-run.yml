@@ -1,8 +1,14 @@
 name: Morning Update (9:10 AM ET)
 on:
   schedule:
-    - cron: '10 13 * * 1-5'   # Mon-Fri 9:10 AM ET
+    - cron: '10 13 * * 1-5'   # 09:10 ET during EDT (summer)
+    - cron: '10 14 * * 1-5'   # 09:10 ET during EST (winter)
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Bypass the trading-day / ET-hour guard (run now regardless)'
+        type: boolean
+        default: true
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -15,9 +21,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run morning mode
-        run: python -m src.daily_options_agent --mode=morning
+        run: python -m src.daily_options_agent --mode=morning ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SCHEDULED_CRON: ${{ github.event.schedule }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -25,3 +32,12 @@ jobs:
           path: |
             report.md
             gex_heatmap_*.png
+      - name: Notify Discord on failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sf -H "Content-Type: application/json" -X POST \
+            -d "{\"content\": \"❌ Morning screener run failed — see $RUN_URL\"}" \
+            "$DISCORD_WEBHOOK_URL" || true

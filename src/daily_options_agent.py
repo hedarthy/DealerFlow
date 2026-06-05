@@ -16,6 +16,7 @@ from src.strategy_generator import generate_strategy
 from src.utils import load_previous_close, save_current_close, send_discord
 from src.cboe_source import fetch_cboe
 from src.timeutil import eastern_now
+from src.market_calendar import is_trading_day, cron_scheduled_et_hour, INTENDED_ET_HOUR
 
 # Resolve all relative paths (config.json, report.md, artifacts, .env) from repo root,
 # so the agent behaves identically regardless of the caller's working directory.
@@ -202,8 +203,37 @@ def get_chains(ticker):
     return spot, chains, "yfinance"
 
 
-def main(mode: str):
-    print(f"🚀 Running {mode.upper()} mode at {eastern_now()} ET")
+def main(mode: str, force: bool = False):
+    et = eastern_now()
+    if not force:
+        target_hour = INTENDED_ET_HOUR[mode]
+        if not is_trading_day(et.date()):
+            print(f"⏭️  SKIPPED: {et.date()} ({et:%A}) is not a US market trading day "
+                  f"(weekend or NYSE holiday). mode={mode}.")
+            return
+        cron = os.getenv("SCHEDULED_CRON", "").strip()
+        sched_hour = cron_scheduled_et_hour(cron, et.date()) if cron else None
+        if sched_hour is not None:
+            # Decide eligibility from the cron's SCHEDULED ET hour, not the
+            # runner's actual start time. The off-season (wrong-DST) cron is
+            # scheduled for a different ET hour and self-skips even if GitHub
+            # delays it into the intended hour; the correct cron owns the run
+            # even if it starts late.
+            if sched_hour != target_hour:
+                print(f"⏭️  SKIPPED: cron '{cron}' is scheduled for {sched_hour:02d}:00 ET "
+                      f"(off-DST duplicate), not the intended {target_hour:02d}:00 ET. The "
+                      f"matching cron handles today's {mode} run.")
+                return
+            if et.hour != target_hour:
+                print(f"⚠️  NOTE: the {target_hour:02d}:00 ET {mode} cron started late "
+                      f"(now {et:%H:%M} ET) — GitHub scheduler latency; proceeding anyway.")
+        elif et.hour != target_hour:
+            # No cron context (a non-forced manual run): fall back to the
+            # intended-hour gate on the actual ET clock.
+            print(f"⏭️  SKIPPED: {mode} run is gated to {target_hour:02d}:00 ET, but it is "
+                  f"currently {et:%H:%M} ET (hour {et.hour}). Use --force to override.")
+            return
+    print(f"🚀 Running {mode.upper()} mode at {et} ET")
     results = []
     source_counts = {}
     previous = load_previous_close() if mode == "morning" else None
@@ -417,5 +447,8 @@ def main(mode: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["close", "morning"], required=True)
+    parser.add_argument("--force", action="store_true",
+                        help="Bypass the trading-day / intended-ET-hour guard "
+                             "(used for manual dispatch and local test runs).")
     args = parser.parse_args()
-    main(args.mode)
+    main(args.mode, force=args.force)
