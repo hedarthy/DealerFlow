@@ -4,9 +4,9 @@ Computes per-contract Black-Scholes gamma, vanna and charm (no scipy dependency 
 the normal CDF/PDF come from ``math``), then aggregates them into per-strike
 exposure grids signed by dealer positioning (calls +1, puts -1).
 
-- GEX  (gamma exposure): how much dealer delta shifts per unit spot move.
-- VEX  (vanna exposure): how much dealer delta shifts per unit change in IV.
-- CEX  (charm exposure): how much dealer delta shifts per unit time (decay).
+- GEX  (gamma exposure): dealer-delta $ shift per 1% spot move.
+- VEX  (vanna exposure): dealer-delta $ shift per 1 vol-point change in IV.
+- CEX  (charm exposure): dealer-delta $ shift per calendar day (decay).
 """
 
 from datetime import datetime
@@ -83,27 +83,40 @@ def _option_sign(row):
 
 
 def contract_exposures(spot, strike, T, iv, oi, sign):
-    """Dealer-signed gamma/vanna/charm exposure for a single contract."""
+    """Dealer-signed gamma/vanna/charm exposure for a single contract, in the
+    conventional desk units used across the dealer-positioning literature:
+
+    - GEX: $ of dealer delta per 1% spot move   (gamma * notional * S^2 * 0.01)
+    - VEX: $ of dealer delta per 1 vol-point     (vanna is per 1.00 sigma -> * 0.01)
+    - CEX: $ of dealer delta per calendar day     (charm is per year -> / 365.25)
+
+    These are uniform positive rescales of the raw greeks, so per-grid rankings,
+    flip locations and normalised score components are unchanged — only the
+    displayed magnitudes become interpretable.
+    """
     gamma, vanna, charm = bs_greeks(spot, strike, T, RISK_FREE, iv)
     notional = oi * 100 * sign
-    gex = gamma * notional * spot * spot
-    vex = vanna * notional * spot
-    cex = charm * notional * spot
+    gex = gamma * notional * spot * spot * 0.01   # per 1% spot move
+    vex = vanna * notional * spot * 0.01          # per 1 vol-point (sigma per 1.00)
+    cex = charm * notional * spot / 365.25        # per calendar day (charm per year)
     return gex, vex, cex
 
 
 def compute_exposure_grids(df, spot, expiry=None):
-    """Aggregate GEX/VEX/CEX per strike across an option chain."""
+    """Aggregate GEX/VEX/CEX per strike across an option chain.
+
+    Contracts with no open interest, a non-positive strike, or no usable implied
+    volatility are skipped: fabricating an IV (the old code forced 0.3) invents
+    dealer exposure that isn't really there and pollutes the regime/flip signals.
+    """
     gex, vex, cex = {}, {}, {}
     T = _expiry_T(expiry)
     for _, row in df.iterrows():
         strike = _num(row.get("strike"))
         oi = _num(row.get("openInterest", 0))
-        if oi <= 0 or strike <= 0:
+        iv = _num(row.get("impliedVolatility", 0.0))
+        if oi <= 0 or strike <= 0 or iv <= 0:
             continue
-        iv = _num(row.get("impliedVolatility", 0.3), 0.3)
-        if iv <= 0:
-            iv = 0.3
         ge, ve, ce = contract_exposures(spot, strike, T, iv, oi, _option_sign(row))
         gex[strike] = gex.get(strike, 0.0) + ge
         vex[strike] = vex.get(strike, 0.0) + ve
