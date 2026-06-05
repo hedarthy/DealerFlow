@@ -108,6 +108,62 @@ def price_action_adjustment(opt_type, spot, ema8, ema21,
     return 0.0, "EMAs mixed"
 
 
+def gex_directional_adjustment(opt_type, spot, gamma_flip, call_wall, put_wall, regime,
+                               em_pct=0.0, align_bonus=10.0, oppose_penalty=12.0):
+    """Dealer-positioning *directional* confirmation, returned as additive points.
+
+    The five weighted components and the gamma/vanna/charm magnitudes are all
+    side-symmetric, so the base score barely distinguishes a call from a put on the
+    same strike — directional conviction otherwise rests entirely on the EMA overlay.
+    This overlay supplies the missing read from the GEX *structure*, but only where
+    that structure is actually reliable.
+
+    We assert an edge **only in a positive-gamma (mean-reverting) book**, where the
+    gamma flip is genuine support and the walls are genuine magnets: a call is
+    confirmed when spot sits above the flip with real room up to the call wall, a put
+    when spot sits below the flip with room down to the put wall. Chasing past a wall
+    (move already made, dealers selling/buying into it) or clearly fighting the flip is
+    penalised; sitting *at* a wall or inside a dead-zone around the flip is neutral so
+    momentum/EMA decides (a flip reclaim is a long, not a short). In a negative-gamma
+    (trending) book the walls are weak and price accelerates, so we abstain (0) and
+    defer entirely to the price-action overlay — never fading a breakout. The flip
+    dead-zone and wall-room bands scale with the expected move so volatile names need
+    proportionally more room before a fresh entry is confirmed.
+
+    Returns ``(points, label)``: > 0 confirms, < 0 opposes, 0 is neutral.
+    """
+    s, flip = _num(spot), _num(gamma_flip)
+    cw, pw = _num(call_wall), _num(put_wall)
+    if s <= 0 or flip <= 0:
+        return 0.0, "n/a"
+    if regime != "positive":
+        return 0.0, "neg-γ: momentum-led (neutral)"
+    em = max(0.0, _num(em_pct)) / 100.0
+    flip_band = max(0.0025, 0.30 * em)   # ± dead-zone around the flip (reclaim zone)
+    wall_room = max(0.0040, 0.40 * em)   # min room to a wall to still be a fresh entry
+    tol = 0.001
+    is_call = str(opt_type).lower().startswith("c")
+    if is_call:
+        if cw > 0 and s > cw * (1 + tol):
+            return -oppose_penalty, "spot above call wall — upside capped ✗"
+        if cw > 0 and s >= cw * (1 - wall_room):
+            return 0.0, "at call wall — limited upside"
+        if s > flip * (1 + flip_band) and (cw <= 0 or s < cw * (1 - wall_room)):
+            return align_bonus, "above γ-flip, room to call wall ✓"
+        if s < flip * (1 - flip_band):
+            return -oppose_penalty, "below γ-flip support ✗"
+        return 0.0, "near γ-flip — momentum decides"
+    if pw > 0 and s < pw * (1 - tol):
+        return -oppose_penalty, "spot below put wall — downside capped ✗"
+    if pw > 0 and s <= pw * (1 + wall_room):
+        return 0.0, "at put wall — limited downside"
+    if pw > 0 and s < flip * (1 - flip_band) and s > pw * (1 + wall_room):
+        return align_bonus, "below γ-flip, room to put wall ✓"
+    if s > flip * (1 + flip_band):
+        return -oppose_penalty, "above γ-flip ✗"
+    return 0.0, "near γ-flip — momentum decides"
+
+
 def compute_composite_score(row, spot, weights, dte=1, gex_balance=0.0, em_pct=0.0,
                             vanna_ex=0.0, charm_ex=0.0, max_vex=0.0, max_cex=0.0):
     """Composite 0-100 score; thin wrapper over score_components + weighted_score."""

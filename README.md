@@ -43,6 +43,28 @@ liquidity (log-OI), vanna/charm concentration at the strike, and expected-move-s
 moneyness — so liquid names spread across the range instead of piling onto one plateau.
 The dominant weighted component is surfaced as the pick's **Edge**.
 
+Two **directional confirmation overlays** sit on top of that (otherwise side-symmetric)
+base score, because gamma/vanna/charm are nearly identical for a call and a put on the
+same strike — without them the call-vs-put choice is barely better than a coin flip:
+
+- **Dealer structure (GEX).** In a *positive-gamma* (mean-reverting) book the gamma flip
+  is real support and the walls are real magnets, so a call sitting above the flip with
+  room up to the call wall is confirmed (and a put below the flip with room to the put
+  wall); chasing *past* a wall or fighting the flip is penalised; sitting *at* a wall or
+  in the flip's reclaim zone is neutral. In a *negative-gamma* (trending) book the walls
+  are weak, so this overlay abstains and defers to momentum — it never fades a breakout.
+  Bands scale with the expected move. Toggle via `enable_gex_directional_filter`.
+- **Price action (SeanTrades-style 8/21 EMA stack)**, below.
+
+A pick reaches **high conviction** only if it clears the score cutoff, is **reachable**
+(near enough the money for its expected move — `min_moneyness_high_conv`, which keeps
+un-hittable far-OTM lottery strikes that top the board on raw vanna concentration out of
+the top two), fights **neither** overlay, and is **confirmed by at least one**.
+
+> All time-sensitive math (time-to-expiry → near-expiry gamma, the DTE window, the 0-DTE
+> "past today's close" cutoff, the report date) is measured in **US/Eastern market time**,
+> so the UTC CI runners don't understate time-to-close and distort 0–2 DTE greeks.
+
 ### Price-action confirmation (SeanTrades-style)
 
 On top of the dealer-greek score, an **8/21 EMA stack** filter (computed from yfinance
@@ -55,11 +77,13 @@ swing methodology for higher-probability entries.
 
 ### Discord output (3 messages)
 
-1. High-conviction pick #1 — regime + price-action bias, a plain-English regime note,
-   strategy bullets (incl. EMA confirmation), and its own GEX/VEX heatmap.
+1. High-conviction pick #1 — regime + price-action **bias** + dealer-**structure** read,
+   a plain-English regime note, strategy bullets (incl. EMA + structure confirmation),
+   and its own GEX/VEX heatmap.
 2. High-conviction pick #2 — same, for a **different** ticker (picks are deduped by
    underlying so #1 and #2 are never the same name).
-3. Additional candidates — table of ticker / type / strike / DTE / score / vol-OI / edge.
+3. Additional candidates — table of ticker / type / strike / **OTM%** / DTE / score /
+   vol-OI / edge.
 
 ## Project layout
 
@@ -70,9 +94,12 @@ swing methodology for higher-probability entries.
 │   ├── daily_options_agent.py   # entrypoint / orchestration / Discord messages
 │   ├── gex_calculator.py        # BS greeks, exposure grids, key levels, regimes
 │   ├── cboe_source.py           # CBOE real-greeks chain fetch (yfinance fallback)
-│   ├── scorer.py                # composite score (continuous components) + EMA overlay
-│   ├── strategy_generator.py    # entry/target/stop + vanna/charm + price-action bullets
+│   ├── scorer.py                # composite score + EMA & GEX-structure overlays
+│   ├── strategy_generator.py    # entry/target/stop + vanna/charm + confirmation bullets
+│   ├── timeutil.py              # US/Eastern market-clock helper (UTC-runner safe)
 │   └── utils.py                 # persistence + Discord
+├── tests/
+│   └── test_analysis.py         # offline overlay/scoring unit tests (no network)
 ├── config.json          # watchlist + thresholds + score weights
 ├── requirements.txt
 └── reports/             # artifacts (gitignored)
@@ -105,7 +132,10 @@ Edit `config.json`:
 - `dte_max` — max days to expiration considered.
 - `min_volume`, `min_premium_k` — liquidity filters.
 - `high_conviction_cutoff` — score threshold for the top bucket.
+- `min_moneyness_high_conv` — reachability floor (0–100) for the top bucket; keeps
+  far-OTM lottery strikes out of the two high-conviction picks.
 - `enable_price_action_filter` — toggle the 8/21 EMA confirmation/trend gate.
+- `enable_gex_directional_filter` — toggle the dealer-structure (flip/wall) directional gate.
 - `score_weights` — weights for GEX regime, flow proxy, squeeze, vanna/charm, moneyness.
 
 ## Data sources

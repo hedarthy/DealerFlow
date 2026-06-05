@@ -12,6 +12,8 @@ exposure grids signed by dealer positioning (calls +1, puts -1).
 from datetime import datetime
 from math import erf, exp, log, pi, sqrt
 
+from src.timeutil import eastern_now
+
 RISK_FREE = 0.05
 _SQRT2 = sqrt(2.0)
 _SQRT2PI = sqrt(2.0 * pi)
@@ -64,7 +66,7 @@ def _expiry_T(expiry):
     if expiry:
         try:
             exp = datetime.strptime(expiry, "%Y-%m-%d").replace(hour=16, minute=0)
-            secs = (exp - datetime.now()).total_seconds()
+            secs = (exp - eastern_now()).total_seconds()
             return max(floor, secs / (365.25 * 24.0 * 3600.0))
         except (ValueError, TypeError):
             pass
