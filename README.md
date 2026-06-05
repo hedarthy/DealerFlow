@@ -113,8 +113,9 @@ swing methodology for higher-probability entries.
 The code reads the webhook from the `DISCORD_WEBHOOK_URL` environment variable — it is
 **never** hard-coded.
 
-- **GitHub Actions:** add a repository secret named `DISCORD_WEBHOOK_URL`
-  (Settings → Secrets and variables → Actions). Both workflows pass it through `env`.
+- **GitHub Actions:** add a repository secret named `OPTIONS_DISCORD_WEBHOOK_URL`
+  (Settings → Secrets and variables → Actions). Both workflows map it to the
+  `DISCORD_WEBHOOK_URL` environment variable via `env`.
 - **Local:** `cp .env.example .env` and set `DISCORD_WEBHOOK_URL`. `.env` is gitignored.
 
 ### 2. Run locally
@@ -193,3 +194,14 @@ price history**, which powers the 8/21 EMA price-action stack. That same history
 cross-checks the live CBOE spot and flags a stale quote if they diverge sharply. A
 per-run source-coverage summary is printed (e.g. `cboe=52`). All logic is deterministic —
 no LLM.
+
+## Disclaimer
+
+This project is for **educational and informational purposes only** and is **not
+financial advice**. Options trading carries substantial risk. The screener's output is a
+deterministic transformation of public, delayed market data — not a recommendation to buy
+or sell any security. Do your own research and trade at your own risk.
+
+## License
+
+Released under the [MIT License](LICENSE).
