@@ -23,7 +23,7 @@ jobs:
       - name: Run close mode
         run: python -m src.daily_options_agent --mode=close ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.OPTIONS_DISCORD_WEBHOOK_URL }}
           SCHEDULED_CRON: ${{ github.event.schedule }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -35,7 +35,7 @@ jobs:
       - name: Notify Discord on failure
         if: failure()
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.OPTIONS_DISCORD_WEBHOOK_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           curl -sf -H "Content-Type: application/json" -X POST \
