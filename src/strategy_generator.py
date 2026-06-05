@@ -40,4 +40,9 @@ def generate_strategy(contract, key_levels, regime, score, vanna_regime="neutral
     elif pa_label == "EMAs mixed":
         bullets.append("**Price-Action:** price is tangled in the 8/21 EMAs — no momentum "
                        "confirmation, size down")
+
+    gd_label = contract.get("gd_label")
+    if gd_label and contract.get("gd_pts", 0.0) > 0:
+        bullets.append(f"**Dealer Structure:** {gd_label} — positioned *with* dealer gamma, "
+                       "not chasing into a wall")
     return bullets

@@ -11,10 +11,11 @@ from src.gex_calculator import (
     compute_exposure_grids, cumulative_zero_cross,
     get_key_levels, get_regime, get_vanna_regime, _expiry_T,
 )
-from src.scorer import score_components, weighted_score, dominant_edge, price_action_adjustment
+from src.scorer import score_components, weighted_score, dominant_edge, price_action_adjustment, gex_directional_adjustment
 from src.strategy_generator import generate_strategy
 from src.utils import load_previous_close, save_current_close, send_discord
 from src.cboe_source import fetch_cboe
+from src.timeutil import eastern_now
 
 # Resolve all relative paths (config.json, report.md, artifacts, .env) from repo root,
 # so the agent behaves identically regardless of the caller's working directory.
@@ -126,10 +127,15 @@ def build_pick_message(rank, contract, keys, regime, mode, date):
     vanna_regime = contract.get("vanna_regime", "neutral")
     bullets = generate_strategy(contract, keys, regime, contract["score"], vanna_regime)
     pa_label = contract.get("pa_label")
+    gd_label = contract.get("gd_label")
     msg = f"# 🔥 HIGH CONVICTION #{rank} — {mode.upper()} {date}\n"
     msg += f"## {contract['ticker']} {contract['strike']:.2f}{tchar} {contract['exp']} — Score {contract['score']:.1f}\n"
     bias = f"**Bias:** {pa_label} | " if pa_label and pa_label != "n/a" else ""
-    msg += (f"**Regime:** {regime} (gamma) / {vanna_regime} (vanna) | {bias}**Edge:** {contract.get('edge', '-')} | "
+    # Only surface the structural read when it actually confirmed the side (a pick is
+    # never opposed; neutral/abstain reads are omitted to avoid clutter).
+    structure = (f"**Structure:** {gd_label} | "
+                 if gd_label and contract.get("gd_pts", 0.0) > 0 else "")
+    msg += (f"**Regime:** {regime} (gamma) / {vanna_regime} (vanna) | {bias}{structure}**Edge:** {contract.get('edge', '-')} | "
             f"**Est. Premium:** ${contract['premium_est']:.0f}K | **Vol/OI:** {contract['vol_oi']:.1f} | "
             f"**OTM:** {contract['otm']:.1f}% | **DTE:** {contract.get('dte', '?')} | "
             f"**Data:** {contract.get('source', 'yfinance')}\n")
@@ -149,11 +155,12 @@ def build_table_message(lower_conv, mode, date):
     msg = f"# 📊 Additional Candidates — {mode.upper()} {date}\n"
     if not lower_conv:
         return msg + "\n_No additional candidates today._"
-    header = f"{'Ticker':<7}{'C/P':<4}{'Strike':>9}{'DTE':>5}{'Score':>7}{'Vol/OI':>8}  Edge"
+    header = f"{'Ticker':<7}{'C/P':<4}{'Strike':>9}{'OTM%':>7}{'DTE':>5}{'Score':>7}{'Vol/OI':>8}  Edge"
     rows = [header, "-" * len(header)]
     for contract, *_ in lower_conv:
         tchar = "C" if contract["type"] == "call" else "P"
         rows.append(f"{contract['ticker']:<7}{tchar:<4}{contract['strike']:>9.2f}"
+                    f"{contract.get('otm', 0.0):>7.1f}"
                     f"{contract.get('dte', '?'):>5}{contract['score']:>7.1f}"
                     f"{contract['vol_oi']:>8.1f}  {contract.get('edge', '')}")
     return msg + "```\n" + "\n".join(rows) + "\n```"
@@ -196,11 +203,12 @@ def get_chains(ticker):
 
 
 def main(mode: str):
-    print(f"🚀 Running {mode.upper()} mode at {datetime.now()}")
+    print(f"🚀 Running {mode.upper()} mode at {eastern_now()} ET")
     results = []
     source_counts = {}
     previous = load_previous_close() if mode == "morning" else None
     pa_enabled = bool(config.get("enable_price_action_filter", False))
+    gd_enabled = bool(config.get("enable_gex_directional_filter", False))
 
     for ticker in config["watchlist"]:
         try:
@@ -223,8 +231,8 @@ def main(mode: str):
                 # has already passed today's 16:00 close (a 0-DTE close run must not
                 # score contracts that are effectively expired).
                 exp_close = datetime.strptime(exp_str, "%Y-%m-%d").replace(hour=16, minute=0)
-                dte = (exp_close.date() - datetime.now().date()).days
-                if dte < 0 or dte > config["dte_max"] or datetime.now() >= exp_close:
+                dte = (exp_close.date() - eastern_now().date()).days
+                if dte < 0 or dte > config["dte_max"] or eastern_now() >= exp_close:
                     continue
                 gex_grid, vex_grid, cex_grid = compute_exposure_grids(df, spot, exp_str)
                 if not gex_grid:
@@ -271,7 +279,15 @@ def main(mode: str):
                     opt_type = row.get("opt_type", "call")
                     pa_pts, pa_label = (price_action_adjustment(opt_type, spot, ema8, ema21)
                                         if pa_enabled else (0.0, None))
-                    raw = base + pa_pts          # rank on the raw overlay-adjusted value
+                    # Dealer-positioning DIRECTIONAL read from the GEX structure: the
+                    # base score and greeks are side-symmetric, so this (with the EMA
+                    # overlay) is what actually decides call vs put for a pick.
+                    gd_pts, gd_label = (gex_directional_adjustment(
+                                            opt_type, spot, key_levels["gamma_flip"],
+                                            key_levels["call_wall"], key_levels["put_wall"],
+                                            regime, em_pct=em_pct)
+                                        if gd_enabled else (0.0, None))
+                    raw = base + pa_pts + gd_pts  # rank on the raw overlay-adjusted value
                     score = min(100.0, max(0.0, raw))  # display/threshold value, clamped
                     contract = {
                         "ticker": ticker,
@@ -285,9 +301,13 @@ def main(mode: str):
                         "rank_score": _f(raw),
                         "base_score": _f(base),
                         "edge": dominant_edge(comps, config["score_weights"]),
+                        "moneyness": _f(comps["moneyness_dte"]),
                         "pa_label": pa_label,
                         "pa_pts": _f(pa_pts),
                         "pa_opposed": pa_pts < 0,
+                        "gd_label": gd_label,
+                        "gd_pts": _f(gd_pts),
+                        "gex_opposed": gd_pts < 0,
                         "ema8": ema8,
                         "ema21": ema21,
                         "premium_est": _f(premium_est),
@@ -320,20 +340,38 @@ def main(mode: str):
         return out
 
     cutoff = config["high_conviction_cutoff"]
-    # High conviction: clear the cutoff AND not fight the EMA trend. We gate BEFORE the
-    # per-ticker dedupe so a ticker whose top raw contract is counter-trend still
-    # contributes its best *trend-aligned* contract instead of being dropped entirely.
+    min_mny = config.get("min_moneyness_high_conv", 0)
+    overlays_on = pa_enabled or gd_enabled
+
+    def _opposed(c):
+        # A pick must not fight EITHER enabled directional overlay.
+        return bool(c.get("pa_opposed")) or bool(c.get("gex_opposed"))
+
+    def _confirmed(c):
+        # ...and must carry at least one POSITIVE directional confirmation (EMA stack
+        # or GEX structure). This keeps coin-flip directionals — strong base score but
+        # no real read on call-vs-put — out of the top two.
+        return c.get("pa_pts", 0.0) > 0 or c.get("gd_pts", 0.0) > 0
+
+    # High conviction: clear the cutoff, be reachable within ~a day's expected move
+    # (the moneyness floor keeps un-hittable far-OTM lottery strikes — which can top the
+    # board on raw vanna concentration alone — out of the top two), fight neither
+    # overlay, and (when any overlay is enabled) be confirmed by at least one. We gate
+    # BEFORE the per-ticker dedupe so a ticker whose top raw contract is counter-trend
+    # still contributes its best *confirmed* contract instead of being dropped entirely.
     eligible_high = [r for r in results
-                     if r[0]["score"] >= cutoff and not r[0].get("pa_opposed")]
+                     if r[0]["score"] >= cutoff and r[0].get("moneyness", 0) >= min_mny
+                     and not _opposed(r[0])
+                     and (_confirmed(r[0]) or not overlays_on)]
     high_conv = _dedupe_by_ticker(eligible_high)[:2]
     high_tickers = {r[0]["ticker"] for r in high_conv}
-    # Additional candidates: trend-aligned / neutral names only (counter-trend setups
-    # are not surfaced), one row per remaining ticker.
-    non_opposed = [r for r in results if not r[0].get("pa_opposed")]
+    # Additional candidates: names that fight neither overlay (counter-trend setups are
+    # not surfaced at all), one row per remaining ticker.
+    non_opposed = [r for r in results if not _opposed(r[0])]
     lower_conv = [r for r in _dedupe_by_ticker(non_opposed)
                   if r[0]["ticker"] not in high_tickers and r[0]["score"] >= 60][:8]
 
-    date = datetime.now().date()
+    date = eastern_now().date()
     header = f"# 🚀 Options High-Conviction Screener\n**Run:** {mode.upper()} | **Date:** {date}\n"
     if pa_enabled:
         header += ("**Screen:** high relative-volume momentum names (AI/semis/photonics watchlist), "
