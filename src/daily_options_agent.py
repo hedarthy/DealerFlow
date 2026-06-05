@@ -12,10 +12,23 @@ from src.scorer import compute_composite_score
 from src.strategy_generator import generate_strategy
 from src.utils import load_previous_close, save_current_close, send_discord
 
+# Resolve all relative paths (config.json, report.md, artifacts, .env) from repo root,
+# so the agent behaves identically regardless of the caller's working directory.
+os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 load_dotenv()
 
 with open("config.json") as f:
     config = json.load(f)
+
+
+def _f(x, default=0.0):
+    """Coerce to float, mapping None/non-numeric/NaN to a default."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return default
+    return v if v == v else default  # v != v is True only for NaN
 
 
 def main(mode: str):
@@ -26,30 +39,49 @@ def main(mode: str):
     for ticker in config["watchlist"]:
         try:
             stock = yf.Ticker(ticker)
-            spot = stock.history(period="1d")["Close"].iloc[-1]
+            hist = stock.history(period="1d")
+            if hist.empty:
+                print(f"Skipping {ticker}: no price history")
+                continue
+            spot = _f(hist["Close"].iloc[-1])
+            if spot <= 0:
+                print(f"Skipping {ticker}: invalid spot")
+                continue
             expirations = stock.options[:4]  # nearest 4 expirations
             for exp_str in expirations:
                 exp_date = datetime.strptime(exp_str, "%Y-%m-%d")
-                if (exp_date - datetime.now()).days > config["dte_max"]:
+                dte = (exp_date.date() - datetime.now().date()).days
+                if dte < 0 or dte > config["dte_max"]:
                     continue
                 chain = stock.option_chain(exp_str)
-                df = pd.concat([chain.calls, chain.puts])
-                gex_grid = compute_gex_grid(df, spot)
+                calls = chain.calls.copy()
+                calls["opt_type"] = "call"
+                puts = chain.puts.copy()
+                puts["opt_type"] = "put"
+                df = pd.concat([calls, puts], ignore_index=True)
+                gex_grid = compute_gex_grid(df, spot, exp_str)
+                if not gex_grid:
+                    continue  # no usable open interest; key levels would be meaningless
                 key_levels = get_key_levels(gex_grid)
                 regime = get_regime(gex_grid)
 
                 for _, row in df.iterrows():
+                    vol = _f(row.get("volume", 0))
+                    oi = _f(row.get("openInterest", 0))
                     score = compute_composite_score(row, gex_grid, spot, regime, config["score_weights"])
-                    if score >= 60 and row.get("volume", 0) >= config["min_volume"]:
+                    if score >= 60 and vol >= config["min_volume"]:
+                        strike = _f(row["strike"])
                         contract = {
                             "ticker": ticker,
-                            "strike": row["strike"],
-                            "type": "call" if row.name in chain.calls.index else "put",
+                            "strike": strike,
+                            "type": row.get("opt_type", "call"),
                             "exp": exp_str,
-                            "score": score,
-                            "premium_est": row.get("volume", 0) * row.get("lastPrice", 0) * 100 / 1000,
-                            "vol_oi": row.get("volume", 0) / row.get("openInterest", 1),
-                            "otm": abs(row["strike"] - spot) / spot * 100
+                            "dte": dte,
+                            "spot": _f(spot),
+                            "score": _f(score),
+                            "premium_est": _f(vol * _f(row.get("lastPrice", 0)) * 100 / 1000),
+                            "vol_oi": _f(vol / oi) if oi else 0.0,
+                            "otm": _f(abs(strike - spot) / spot * 100) if spot else 0.0,
                         }
                         results.append((contract, gex_grid, key_levels, regime))
             time.sleep(1.5)  # safe delay for expanded ticker list
@@ -71,21 +103,32 @@ def main(mode: str):
     report += "## 🔥 HIGH CONVICTION DAY TRADES (Exactly 2)\n\n"
     for i, (contract, gex_grid, keys, regime) in enumerate(high_conv, 1):
         bullets = generate_strategy(contract, keys, regime, contract["score"])
-        report += f"### {i}. {contract['ticker']} {contract['strike']}{'C' if contract['type']=='call' else 'P'} {contract['exp']} – Score **{contract['score']:.0f}**\n"
-        report += f"**Est. Premium:** ${contract['premium_est']:.0f}K | **Vol/OI:** {contract['vol_oi']:.1f} | **OTM:** {contract['otm']:.1f}% | **DTE:** {config['dte_max']}\n\n"
+        report += f"### {i}. {contract['ticker']} {contract['strike']:.2f}{'C' if contract['type']=='call' else 'P'} {contract['exp']} – Score **{contract['score']:.0f}**\n"
+        report += f"**Est. Premium:** ${contract['premium_est']:.0f}K | **Vol/OI:** {contract['vol_oi']:.1f} | **OTM:** {contract['otm']:.1f}% | **DTE:** {contract.get('dte', config['dte_max'])}\n\n"
         report += "**Entry/Exit Strategy:**\n" + "\n".join([f"- {b}" for b in bullets]) + "\n\n"
 
     report += "## 📉 Lower Conviction Trades (ranked descending)\n"
     for i, (contract, _, _, _) in enumerate(lower_conv, 1):
-        report += f"{i}. {contract['ticker']} {contract['strike']}{'C/P'} – Score **{contract['score']:.0f}** (Vol/OI {contract['vol_oi']:.1f})\n"
+        tchar = "C" if contract["type"] == "call" else "P"
+        report += f"{i}. {contract['ticker']} {contract['strike']:.2f}{tchar} {contract['exp']} – Score **{contract['score']:.0f}** (Vol/OI {contract['vol_oi']:.1f})\n"
 
-    # Save heatmap PNG (latest high-conv)
+    # Save heatmap PNG (top high-conviction name), windowed near the traded strike
     if high_conv:
-        plt.figure(figsize=(12, 7))
-        sns.heatmap(pd.DataFrame(list(high_conv[0][1].items()), columns=["strike", "gex"]).set_index("strike"),
-                    annot=True, cmap="RdYlGn", center=0, fmt=".0f")
-        plt.title(f"GEX Heatmap – {high_conv[0][0]['ticker']} High Conviction")
-        plt.savefig("gex_heatmap.png")
+        top_contract, top_grid = high_conv[0][0], high_conv[0][1]
+        center = top_contract["strike"]
+        grid_df = pd.DataFrame(list(top_grid.items()), columns=["strike", "gex"])
+        grid_df["gex_m"] = grid_df["gex"] / 1e6
+        grid_df["dist"] = (grid_df["strike"] - center).abs()
+        grid_df = grid_df.nsmallest(21, "dist").sort_values("strike")
+        heat = grid_df.set_index("strike")[["gex_m"]]
+        plt.figure(figsize=(6, 10))
+        sns.heatmap(heat, annot=True, cmap="RdYlGn", center=0, fmt=".1f",
+                    cbar_kws={"label": "GEX ($M)"})
+        plt.title(f"GEX Heatmap – {top_contract['ticker']} (spot {top_contract.get('spot', 0):.2f})")
+        plt.ylabel("Strike")
+        plt.xlabel("")
+        plt.tight_layout()
+        plt.savefig("gex_heatmap.png", dpi=120)
         plt.close()
 
     with open("report.md", "w") as f:

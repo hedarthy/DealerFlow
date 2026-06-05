@@ -21,9 +21,14 @@ def send_discord(report, png_path=None):
     if not webhook:
         print("⚠️  DISCORD_WEBHOOK_URL not set; skipping Discord post")
         return
-    data = {"content": report[:2000]}
-    requests.post(webhook, json=data)
-    if png_path and os.path.exists(png_path):
-        with open(png_path, "rb") as fh:
-            files = {"file": fh}
-            requests.post(webhook, files=files)
+    try:
+        r = requests.post(webhook, json={"content": report[:2000]}, timeout=15)
+        print(f"Discord text post: HTTP {r.status_code}")
+        r.raise_for_status()
+        if png_path and os.path.exists(png_path):
+            with open(png_path, "rb") as fh:
+                r2 = requests.post(webhook, files={"file": fh}, timeout=30)
+                print(f"Discord image post: HTTP {r2.status_code}")
+                r2.raise_for_status()
+    except requests.RequestException as e:
+        print(f"⚠️  Discord post failed: {e}")
