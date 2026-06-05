@@ -131,42 +131,80 @@ def compute_gex_grid(df, spot, expiry=None):
     return compute_exposure_grids(df, spot, expiry)[0]
 
 
-def cumulative_zero_cross(grid, spot=None, window=0.25):
+def cumulative_zero_cross(grid, spot=None, window=0.25, min_frac=0.05):
     """Strike where cumulative exposure (summed low->high strike) crosses zero.
 
     This is the gamma/vanna "flip" — the balance point between negative (put-side)
-    and positive (call-side) exposure — and sits near spot, unlike "smallest |x|"
-    which would always pick a deep-OTM ~zero strike.
+    and positive (call-side) exposure — and should sit near spot, unlike "smallest
+    |x|" which would always pick a deep-OTM ~zero strike.
 
     For 0-2 DTE chains, exposure at deep-OTM strikes is ~0 but carries tiny mixed
-    signs that can trigger a spurious early crossing in the wings. When ``spot`` is
-    supplied we therefore restrict the search to strikes within ``window`` (±25% by
-    default) of spot, so the flip reflects the meaningful near-money transition.
+    signs that can trigger a spurious crossing in the wings. We guard against that in
+    two ways so the flip stays a meaningful, stable near-money level:
 
-    When the (windowed) cumulative profile never changes sign — a one-sided book —
-    the flip lies outside the listed strikes; we then return the peak-|exposure|
-    strike, which for short-dated chains concentrates near spot.
+    * ``window`` (±25% of spot) restricts the search to near-money strikes. If spot is
+      given but no strike falls in that window we return ``0.0`` rather than scanning the
+      full chain (which would reintroduce far-flip instability on a stale/split spot).
+    * ``min_frac`` ignores any crossing where the cumulative never moved past that
+      fraction (5%) of the *windowed* gross exposure — i.e. wing wiggles around zero.
+      Scaling to windowed (not whole-chain) gross keeps one huge far-OTM strike from
+      inflating the bar and masking a real near-money flip.
+    * When several genuine crossings remain we return the one **nearest spot**, not
+      the first one encountered scanning upward (which could be a low-strike blip).
+
+    A genuinely one-sided near-money book has no flip in range; we return ``0.0`` so
+    callers treat the structure as neutral (the scorer's directional overlay and the
+    strategy bullets both special-case a zero/unknown flip) rather than inventing a
+    far, unstable level.
     """
     if not grid:
         return 0.0
     all_strikes = sorted(grid)
     strikes = all_strikes
-    cum = 0.0
+    base = 0.0
     if spot and spot > 0:
         lo, hi = spot * (1.0 - window), spot * (1.0 + window)
         windowed = [k for k in all_strikes if lo <= k <= hi]
-        if windowed:
-            strikes = windowed
-            cum = sum(grid[k] for k in all_strikes if k < lo)  # carry below-window mass
-    prev = cum
-    for idx, k in enumerate(strikes):
+        if not windowed:
+            # Spot is set but no strike sits within the search window (stale/split spot
+            # or a malformed chain). Refuse to invent a far flip; treat as neutral.
+            return 0.0
+        strikes = windowed
+        base = sum(grid[k] for k in all_strikes if k < lo)  # carry below-window mass
+
+    # Scale the significance threshold to the exposure actually in play across the
+    # scanned (near-money) strikes — NOT the whole chain — so a single huge far-OTM
+    # strike outside the window can't inflate the bar and mask a real near-money flip.
+    gross = sum(abs(grid[k]) for k in strikes)
+    thresh = min_frac * gross if gross else 0.0
+
+    crossings = []
+    cum = base
+    prev_c = base
+    prev_s = None
+    for k in strikes:
         cum += grid[k]
-        if (prev < 0 <= cum) or (prev > 0 >= cum):
-            if idx == 0:
-                return float(k)
-            return float(k if abs(cum) <= abs(prev) else strikes[idx - 1])
-        prev = cum
-    return float(max(strikes, key=lambda s: abs(grid[s])))
+        if (prev_c < 0 <= cum) or (prev_c > 0 >= cum):
+            # Only count it if the cumulative actually carried real mass on one side
+            # (kills deep-OTM wing wiggles around zero).
+            if max(abs(prev_c), abs(cum)) >= thresh:
+                if prev_s is None or not (spot and spot > 0):
+                    crossings.append(k)
+                else:
+                    # Attribute the flip to a bracketing strike: nearest spot, and on a
+                    # distance tie the endpoint whose cumulative is closer to zero (i.e.
+                    # nearer the true crossing). Keeps a big jump out of a far wing from
+                    # pinning the flip on the wrong side.
+                    chosen = min(((prev_s, prev_c), (k, cum)),
+                                 key=lambda sc: (abs(sc[0] - spot), abs(sc[1])))[0]
+                    crossings.append(chosen)
+        prev_s, prev_c = k, cum
+
+    if crossings:
+        if spot and spot > 0:
+            return float(min(crossings, key=lambda s: abs(s - spot)))
+        return float(crossings[0])
+    return 0.0
 
 
 def get_key_levels(gex_grid, spot=None):
