@@ -1,0 +1,23 @@
+{
+  "watchlist": [
+    "SPY", "QQQ", "IWM",
+    "AAPL", "TSLA", "NVDA", "AMZN", "GOOGL", "META", "AMD", "SMCI",
+    "AVGO", "MRVL", "MU", "TSM", "INTC", "QCOM", "TXN", "ADI", "KLAC", "AMAT", "LRCX", "ARM",
+    "LITE", "COHR", "AAOI", "IPGP", "CIEN", "NOK",
+    "SOI", "SIVE", "TSEM", "IQE", "AXTI", "CRDO", "ALAB", "GLW",
+    "AEHR", "ASML", "ONTO", "LWLG", "ALMU", "WOLF", "MRAM",
+    "LPK", "SVCO", "PENG", "TRT", "GFS", "UMC", "JBL", "CLS", "FLEX",
+    "ANET", "VRT", "ASTS", "AMBQ"
+  ],
+  "dte_max": 2,
+  "min_volume": 500,
+  "min_premium_k": 25,
+  "high_conviction_cutoff": 75,
+  "score_weights": {
+    "gex_regime": 0.30,
+    "flow_proxy": 0.25,
+    "squeeze": 0.20,
+    "vanna_charm": 0.15,
+    "moneyness_dte": 0.10
+  }
+}

@@ -1,0 +1,27 @@
+name: Morning Update (9:10 AM ET)
+on:
+  schedule:
+    - cron: '10 13 * * 1-5'   # Mon-Fri 9:10 AM ET
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run morning mode
+        run: python -m src.daily_options_agent --mode=morning
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: morning-report
+          path: |
+            report.md
+            gex_heatmap_*.png
