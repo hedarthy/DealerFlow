@@ -298,7 +298,7 @@ def build_summary(spot, source, slot, et, rows):
                 f"{_fmt_k(r['net_gex'], 0):>15}{_fmt_k(r['net_vex'], 0):>15}"
                 f"{_fmt_k(r['net_cex'], 0):>15}")
         msg += "```\n" + "\n".join(lines) + "\n```"
-        msg += "_ΣGEX $K per 1% spot · ΣVanna $K per vol-pt · ΣCharm $K per day · " \
+        msg += "_ΣGEX $K per 1% spot · ΣVanna $K per 1.00σ · ΣCharm $K per day · " \
                "walls = price magnets._"
     else:
         msg += "_No usable SPY expirations with open interest right now._"
@@ -438,7 +438,7 @@ def main(force=False):
          "🟢 **SPY Gamma (GEX)** — dealer gamma by strike × expiry. Positive (bright) "
          "rows are call-heavy pin/resistance magnets; negative (dark) rows accelerate "
          "moves. The King ★ is the dominant strike on the board."),
-        ("vex", "Vanna (VEX)", "$K per vol-pt", "spy_gex_vanna.png", 1,
+        ("vex", "Vanna (VEX)", "$K per 1.00σ", "spy_gex_vanna.png", 1,
          "🟣 **SPY Vanna (VEX)** — how dealer hedging shifts when IV moves. Bright rows "
          "draw price on a vol drop / supportive flows; dark rows pressure price as vol "
          "rises. King ★ = largest vanna magnet."),
