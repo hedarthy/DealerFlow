@@ -145,7 +145,7 @@ def _style_dark(fig, ax, cbar):
     """Apply the Skylit dark theme to a heatmap axis + its colorbar."""
     fig.patch.set_facecolor(SKY_BG)
     ax.set_facecolor(SKY_BG)
-    ax.tick_params(colors=SKY_TEXT, labelsize=8)
+    ax.tick_params(colors=SKY_TEXT, labelsize=10)
     for spine in ax.spines.values():
         spine.set_visible(False)
     if cbar is not None:
@@ -200,14 +200,17 @@ def render_grid(mat, spot, title, cbar_label, path, decimals=1):
     """
     strikes = list(mat.index)
     nrows, ncols = mat.shape
-    height = max(9.0, 0.30 * nrows + 1.6)
-    width = max(7.5, 2.0 + 1.5 * ncols)
+    # Landscape layout: wide columns so each cell is broad and the values are easy to read,
+    # rows tall enough for a large font. With ~51 strike rows × 5 expiry columns this yields
+    # a figure that is wider than it is tall (e.g. ~21" × ~19").
+    height = max(11.0, 0.34 * nrows + 2.2)
+    width = max(16.0, 4.0 + 3.4 * ncols)
     fig, ax = plt.subplots(figsize=(width, height))
     annot = _annot_grid(mat, decimals)
     mask = ~np.isfinite(mat.to_numpy(dtype=float))  # strikes absent for an expiry -> dark gap
     sns.heatmap(
         mat, ax=ax, cmap=SKY_CMAP, annot=annot, fmt="", mask=mask,
-        annot_kws={"size": 6},  # color omitted -> seaborn picks per-cell contrast (dark on light, light on dark)
+        annot_kws={"size": 11},  # color omitted -> seaborn picks per-cell contrast (dark on light, light on dark)
         linewidths=0.4, linecolor=SKY_GRID,
         cbar_kws={"label": cbar_label, "shrink": 0.6, "pad": 0.02},
     )
@@ -217,22 +220,22 @@ def render_grid(mat, spot, title, cbar_label, path, decimals=1):
 
     ax.xaxis.tick_top()
     ax.xaxis.set_label_position("top")
-    ax.set_xticklabels(mat.columns, rotation=0, color=SKY_TEXT, fontsize=8)
-    ax.set_yticklabels(strikes, rotation=0, color=SKY_TEXT, fontsize=7)
+    ax.set_xticklabels(mat.columns, rotation=0, color=SKY_TEXT, fontsize=13)
+    ax.set_yticklabels(strikes, rotation=0, color=SKY_TEXT, fontsize=10)
     ax.set_ylabel("")
 
     # Spot line + tag: rows run high→low, so the boundary sits below every strike > spot.
     n_above = sum(1 for k in strikes if k > spot)
-    ax.axhline(n_above, color=SKY_SPOT, lw=1.6, ls=(0, (5, 2)), zorder=5)
+    ax.axhline(n_above, color=SKY_SPOT, lw=2.2, ls=(0, (5, 2)), zorder=5)
     ax.annotate(
         f"spot ${spot:.2f}", xy=(0, n_above), xycoords=("axes fraction", "data"),
-        xytext=(-8, 0), textcoords="offset points", ha="right", va="center",
-        color=SKY_BG, fontsize=7.5, fontweight="bold", clip_on=False, zorder=6,
-        bbox=dict(boxstyle="round,pad=0.3", fc=SKY_SPOT, ec="none"),
+        xytext=(-10, 0), textcoords="offset points", ha="right", va="center",
+        color=SKY_BG, fontsize=11.5, fontweight="bold", clip_on=False, zorder=6,
+        bbox=dict(boxstyle="round,pad=0.35", fc=SKY_SPOT, ec="none"),
     )
 
-    fig.suptitle(title, color=SKY_TEXT, fontsize=12, fontweight="bold")
-    plt.savefig(path, dpi=220, facecolor=SKY_BG, bbox_inches="tight", pad_inches=0.35)
+    fig.suptitle(title, color=SKY_TEXT, fontsize=17, fontweight="bold")
+    plt.savefig(path, dpi=200, facecolor=SKY_BG, bbox_inches="tight", pad_inches=0.35)
     plt.close(fig)
 
 
