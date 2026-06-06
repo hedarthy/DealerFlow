@@ -19,15 +19,17 @@ windowed to **25 strikes above and below spot**:
 
 | Image | Greek | Reads as |
 |-------|-------|----------|
+| `spy_gex_summary.png` | **Magnet table** | Per-expiry regime, walls, net Σ greeks |
 | `spy_gex_gamma.png` | **GEX** (gamma) | Pin/resistance vs. acceleration zones |
 | `spy_gex_vanna.png` | **VEX** (vanna) | Where IV moves push dealer hedging |
 | `spy_gex_charm.png` | **CEX** (charm) | Delta decay drift into expiry |
 
 Styling matches the Skylit-AI look: dark background, **viridis** (min-max) colour scale,
 a **white dashed line + tag at spot**, dates across the top, and the largest-magnitude
-**"King" strike starred (★)**. A text **magnet-map summary** (spot, regime, gamma flip,
-call/put walls, net GEX/VEX/CEX per expiry, plain-English read) is posted first, then the
-three images — four Discord messages per run.
+**"King" strike starred (★)**. A short **header** (spot, regime, gamma flip, call/put walls,
+plain-English read) plus a **magnet-table card** (`spy_gex_summary.png` — per-expiry regime,
+walls and net GEX/VEX/CEX, sign-coloured, rendered as an image so it never wraps) is posted
+first, then the three heatmaps — four Discord messages per run.
 
 ## Schedule (ET, NYSE trading days only)
 
