@@ -52,10 +52,10 @@ folder and posts nothing (safe local dry run). Artifacts (`spy_gex_*.png`,
 
 ## Discord webhook
 
-The workflow resolves, in order: `SPY_GEX_DISCORD_WEBHOOK_URL` →
-`OPTIONS_DISCORD_WEBHOOK_URL` → `DISCORD_WEBHOOK_URL`, and maps the first one set into
-`DISCORD_WEBHOOK_URL` for the run. Set `SPY_GEX_DISCORD_WEBHOOK_URL` as a repo secret to
-route this alert to its own channel without touching the screener's webhook.
+The workflow resolves, in order: `SPY_BOY_DISCORD_WEBHOOK` →
+`SPY_GEX_DISCORD_WEBHOOK_URL` → `OPTIONS_DISCORD_WEBHOOK_URL`, and maps the first one set
+into `DISCORD_WEBHOOK_URL` for the run. `SPY_BOY_DISCORD_WEBHOOK` is the dedicated SPY
+dealerflow channel, so this alert posts there without touching the screener's webhook.
 
 ## Tests
 

@@ -42,9 +42,9 @@ jobs:
       - name: Run SPY GEX alert
         run: python -m spy_gex.agent ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
         env:
-          # Dedicated SPY channel if SPY_GEX_DISCORD_WEBHOOK_URL is set, otherwise fall
-          # back to the existing screener webhook so it works out of the box.
-          DISCORD_WEBHOOK_URL: ${{ secrets.SPY_GEX_DISCORD_WEBHOOK_URL || secrets.OPTIONS_DISCORD_WEBHOOK_URL }}
+          # Dedicated SPY channel. Prefer SPY_BOY_DISCORD_WEBHOOK, then the older
+          # SPY_GEX_DISCORD_WEBHOOK_URL, finally fall back to the screener webhook.
+          DISCORD_WEBHOOK_URL: ${{ secrets.SPY_BOY_DISCORD_WEBHOOK || secrets.SPY_GEX_DISCORD_WEBHOOK_URL || secrets.OPTIONS_DISCORD_WEBHOOK_URL }}
           SCHEDULED_CRON: ${{ github.event.schedule }}
       - name: Upload artifacts
         if: always()
@@ -58,7 +58,7 @@ jobs:
       - name: Notify Discord on failure
         if: failure()
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.SPY_GEX_DISCORD_WEBHOOK_URL || secrets.OPTIONS_DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.SPY_BOY_DISCORD_WEBHOOK || secrets.SPY_GEX_DISCORD_WEBHOOK_URL || secrets.OPTIONS_DISCORD_WEBHOOK_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           curl -sf -H "Content-Type: application/json" -X POST \
