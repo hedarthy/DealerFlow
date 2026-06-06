@@ -6,7 +6,7 @@ the normal CDF/PDF come from ``math``. Kept independent of ``src/`` so this aler
 can never be broken by, or break, the twice-daily screener.
 
 - GEX (gamma exposure): dealer-delta $ shift per 1% spot move.
-- VEX (vanna exposure): dealer-delta $ shift per 1 vol-point change in IV.
+- VEX (vanna exposure): dealer-delta $ shift per 1.00 sigma (a full vol point) change in IV.
 - CEX (charm exposure): dealer-delta $ shift per calendar day (decay).
 """
 from datetime import datetime
@@ -88,14 +88,18 @@ def contract_exposures(spot, strike, T, iv, oi, sign):
     """Dealer-signed gamma/vanna/charm exposure for a single contract, in the
     conventional desk units used across the dealer-positioning literature:
 
-    - GEX: $ of dealer delta per 1% spot move   (gamma * notional * S^2 * 0.01)
-    - VEX: $ of dealer delta per 1 vol-point     (vanna is per 1.00 sigma -> * 0.01)
-    - CEX: $ of dealer delta per calendar day     (charm is per year -> / 365.25)
+    - GEX: $ of dealer delta per 1% spot move    (gamma * notional * S^2 * 0.01)
+    - VEX: $ of dealer delta per 1.00 sigma move  (vanna is already per 1.00 sigma)
+    - CEX: $ of dealer delta per calendar day      (charm is per year -> / 365.25)
+
+    VEX is quoted per a full 1.00 change in implied vol (i.e. one whole vol point,
+    e.g. 0.20 -> 1.20), matching the per-1.00-sigma convention common to vendor
+    dealer-flow maps; that is 100x a per-0.01-vol-point figure.
     """
     gamma, vanna, charm = bs_greeks(spot, strike, T, RISK_FREE, iv)
     notional = oi * 100 * sign
     gex = gamma * notional * spot * spot * 0.01   # per 1% spot move
-    vex = vanna * notional * spot * 0.01          # per 1 vol-point (sigma per 1.00)
+    vex = vanna * notional * spot                 # per 1.00 sigma (vanna already per 1.00)
     cex = charm * notional * spot / 365.25        # per calendar day (charm per year)
     return gex, vex, cex
 

@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from spy_gex.exposure import (
     cumulative_zero_cross as flip, select_window_strikes, compute_exposure_grids,
-    get_key_levels, get_regime,
+    get_key_levels, get_regime, bs_greeks, contract_exposures,
 )
 from spy_gex.calendar_util import (
     eastern_now, is_trading_day, cron_scheduled_et_time, market_close_hm,
@@ -78,6 +78,19 @@ def test_exposure_dealer_sign():
     assert keys["call_wall"] == 105.0
     assert keys["put_wall"] == 95.0
     print("ok  exposure dealer sign / key levels")
+
+
+def test_vex_per_full_sigma():
+    # VEX is quoted per a FULL 1.00 sigma move in IV (one whole vol point), NOT per
+    # 0.01 vol-point. So vex must equal vanna * (oi*100*sign) * spot with NO 0.01
+    # factor -- i.e. 100x a per-vol-point figure. This pins the scaling convention.
+    spot, strike, T, iv, oi, sign = 100.0, 105.0, 30 / 365.25, 0.18, 5000, 1
+    _, vanna, _ = bs_greeks(spot, strike, T, 0.05, iv)
+    _, vex, _ = contract_exposures(spot, strike, T, iv, oi, sign)
+    expected = vanna * (oi * 100 * sign) * spot          # per 1.00 sigma
+    assert abs(vex - expected) < 1e-9
+    assert abs(vex - 100.0 * (expected * 0.01)) < 1e-9   # 100x the per-vol-point value
+    print("ok  VEX scaled per 1.00 sigma (full vol point, no 0.01)")
 
 
 def test_eastern_now():
@@ -219,6 +232,7 @@ if __name__ == "__main__":
     test_select_window_strikes()
     test_cumulative_zero_cross()
     test_exposure_dealer_sign()
+    test_vex_per_full_sigma()
     test_eastern_now()
     test_fmt_k_skylit_style()
     test_build_greek_matrix_missing_is_nan()
