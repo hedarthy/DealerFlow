@@ -25,7 +25,7 @@ from spy_gex.calendar_util import (
 )
 from spy_gex.agent import (
     slot_decision, build_greek_matrix, _annot_grid, render_grid, SKY_KING, _fmt_k,
-    render_summary_table, build_summary_text, build_summary,
+    render_summary_table, build_summary_text, build_summary, render_front_triptych,
 )
 
 # Union of EST + EDT UTC crons declared in spy-gex-run.yml.
@@ -215,6 +215,24 @@ def test_render_grid_smoke():
     print("ok  render_grid smoke (mixed/zero/missing + all-NaN)")
 
 
+def test_front_triptych_smoke():
+    import tempfile
+    spot = 100.4
+    window = [99.0, 100.0, 101.0, 102.0]
+    front = "06-08\nD2"
+    # Three greeks for one expiry; differing scales + a missing strike must render fine.
+    per_exp = {
+        "gex": {front: {99.0: -4e6, 100.0: 1e6, 101.0: 7e6}},
+        "vex": {front: {99.0: -9e8, 100.0: 2e8, 101.0: 5e8, 102.0: -1e8}},
+        "cex": {front: {99.0: -3e4, 100.0: 0.0, 101.0: 8e4}},
+    }
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "triptych.png")
+        render_front_triptych(per_exp, window, front, spot, "front triptych", path)
+        assert os.path.exists(path) and os.path.getsize(path) > 0
+    print("ok  render_front_triptych smoke (3 greeks side by side, own scales)")
+
+
 def test_summary_table_and_text_smoke():
     import tempfile
     rows = [
@@ -266,6 +284,7 @@ if __name__ == "__main__":
     test_build_greek_matrix_missing_is_nan()
     test_annot_grid_king_and_blanks()
     test_render_grid_smoke()
+    test_front_triptych_smoke()
     test_summary_table_and_text_smoke()
     test_spy_hourly_slots_dedupe()
     test_spy_early_close_suppresses_afternoon()

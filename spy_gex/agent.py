@@ -31,6 +31,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 from matplotlib.ticker import FuncFormatter
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 import seaborn as sns
 
 from spy_gex.exposure import (
@@ -254,6 +255,66 @@ def render_grid(mat, spot, title, cbar_label, path, decimals=1):
         color=SKY_BG, fontsize=11.5, fontweight="bold", clip_on=False, zorder=6,
         bbox=dict(boxstyle="round,pad=0.35", fc=SKY_SPOT, ec="none"),
     )
+
+    fig.suptitle(title, color=SKY_TEXT, fontsize=17, fontweight="bold")
+    plt.savefig(path, dpi=200, facecolor=SKY_BG, bbox_inches="tight", pad_inches=0.35)
+    plt.close(fig)
+
+
+# Greek panels for the front-expiry triptych: (per_exp key, label, colorbar unit, decimals).
+TRIPTYCH_PANELS = [
+    ("gex", "Gamma (GEX)", "$K per 1% spot", 1),
+    ("vex", "Vanna (VEX)", "$K per 1.00σ", 1),
+    ("cex", "Charm (CEX)", "$K per day", 1),
+]
+
+
+def render_front_triptych(per_exp, window, front_label, spot, title, path):
+    """One expiry, three greeks (GEX/VEX/CEX) rendered side by side for a quick cross-read.
+
+    Each panel is the front-expiry column of one greek as its OWN min-max viridis heatmap
+    (independent colour scale + colorbar, because the three greeks live on very different
+    dollar scales — a shared scale would wash the smaller one out). All three share the
+    strike-row axis, a single white spot line crosses every panel, and each greek stars its
+    own King ★ within its column.
+    """
+    strikes = sorted(window, reverse=True)
+    nrows = len(strikes)
+    height = max(11.0, 0.34 * nrows + 2.2)
+    width = 16.5
+    fig, axes = plt.subplots(1, len(TRIPTYCH_PANELS), figsize=(width, height))
+    n_above = sum(1 for k in strikes if k > spot)  # spot line sits below every strike > spot
+
+    for ax, (key, name, unit, dec) in zip(axes, TRIPTYCH_PANELS):
+        mat = build_greek_matrix(per_exp[key], window, [front_label])  # strikes × 1 column
+        mask = ~np.isfinite(mat.to_numpy(dtype=float))
+        annot = _annot_grid(mat, dec)
+        sns.heatmap(
+            mat, ax=ax, cmap=SKY_CMAP, annot=annot, fmt="", mask=mask,
+            annot_kws={"size": 12}, linewidths=0.4, linecolor=SKY_GRID, cbar=False,
+        )
+        cax = make_axes_locatable(ax).append_axes("right", size="16%", pad=0.08)
+        cbar = fig.colorbar(ax.collections[0], cax=cax)
+        cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: _fmt_k(x, 0)))
+        _style_dark(fig, ax, cbar)
+        _contrast_annotations(ax, mat)
+
+        ax.set_title(f"{name}\n{unit}", color=SKY_TEXT, fontsize=14, fontweight="bold", pad=10)
+        ax.set_xticks([])  # single column; the expiry is named in the suptitle
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        ax.axhline(n_above, color=SKY_SPOT, lw=2.2, ls=(0, (5, 2)), zorder=5)
+        if ax is axes[0]:
+            ax.set_yticks(np.arange(nrows) + 0.5)
+            ax.set_yticklabels(strikes, rotation=0, color=SKY_TEXT, fontsize=10)
+            ax.annotate(
+                f"spot ${spot:.2f}", xy=(0, n_above), xycoords=("axes fraction", "data"),
+                xytext=(-10, 0), textcoords="offset points", ha="right", va="center",
+                color=SKY_BG, fontsize=11.5, fontweight="bold", clip_on=False, zorder=6,
+                bbox=dict(boxstyle="round,pad=0.35", fc=SKY_SPOT, ec="none"),
+            )
+        else:
+            ax.set_yticks([])
 
     fig.suptitle(title, color=SKY_TEXT, fontsize=17, fontweight="bold")
     plt.savefig(path, dpi=200, facecolor=SKY_BG, bbox_inches="tight", pad_inches=0.35)
@@ -547,6 +608,23 @@ def main(force=False):
         render_grid(mat, spot, f"{name} — {base}", unit, path, decimals=dec)
         images.append((caption, path))
 
+    # Final image: the nearest expiry's gamma/vanna/charm side by side for a quick cross-read.
+    front_label = exp_labels[0]
+    front = rows[0]
+    tri_png = _art("spy_gex_front_triptych.png")
+    render_front_triptych(
+        per_exp, window, front_label, spot,
+        f"SPY Front Expiry {front['exp']} (D{front['dte']}) — Gamma · Vanna · Charm · "
+        f"spot ${spot:.2f} · {label}",
+        tri_png,
+    )
+    images.append((
+        f"🧲 **SPY Front Expiry {front['exp']} (D{front['dte']})** — Gamma · Vanna · Charm side "
+        f"by side. Same strikes, independent colour scales; the white line is spot and each "
+        f"panel stars its own King ★.",
+        tri_png,
+    ))
+
     summary = build_summary_text(spot, source, slot, et, rows)
     table_png = _art("spy_gex_summary.png")
     render_summary_table(rows, table_png)
@@ -559,7 +637,8 @@ def main(force=False):
     with open(_art("spy_gex_report.md"), "w") as f:
         report = build_summary(spot, source, slot, et, rows)
         f.write(report + "\n\n" + "\n\n".join(c for c, _ in images))
-    print(f"✅ SPY GEX alert posted — {len(rows)} expiries × 3 greek grids, source {source}")
+    print(f"✅ SPY GEX alert posted — {len(rows)} expiries × 3 greek grids + front triptych, "
+          f"source {source}")
 
 
 if __name__ == "__main__":
