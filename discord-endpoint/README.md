@@ -35,8 +35,8 @@ the always-on gateway bot** — you no longer need to host `ticker_gex/bot.py`.
 ## Deploy
 
 1. `npm i -g vercel` (or use the Vercel dashboard “Import Project”).
-2. **Set the project Root Directory to `vercel`** (Vercel dashboard → Project → Settings →
-   General → Root Directory = `vercel`). This is important: it makes Vercel install this
+2. **Set the project Root Directory to `discord-endpoint`** (Vercel dashboard → Project → Settings →
+   General → Root Directory = `discord-endpoint`). This is important: it makes Vercel install this
    folder's tiny `requirements.txt` (PyNaCl + requests) instead of the repo's heavy
    pandas/matplotlib stack.
 3. Add **Environment Variables** (Project → Settings → Environment Variables):
@@ -63,7 +63,7 @@ the always-on gateway bot** — you no longer need to host `ticker_gex/bot.py`.
    ```bash
    # from repo root, with the bot token + app id available (e.g. in .env)
    DISCORD_APP_ID=1512703597283115078 DISCORD_GUILD_ID=<your-server-id> \
-     python vercel/register_commands.py     # instant for one server
+     python discord-endpoint/register_commands.py     # instant for one server
    ```
 3. In Discord, run `/gex TSLA`. You'll get an instant ephemeral “Queued **TSLA**…”, and the
    5 dealerflow images post to the webhook channel ~1 minute later (Actions runner spin-up +
@@ -89,5 +89,5 @@ the always-on gateway bot** — you no longer need to host `ticker_gex/bot.py`.
 ## Test locally
 
 ```bash
-python vercel/test_interactions.py   # offline: signature matrix + routing, no network
+python discord-endpoint/test_interactions.py   # offline: signature matrix + routing, no network
 ```

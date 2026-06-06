@@ -1,6 +1,6 @@
 """Offline tests for the Vercel interactions function (no network, no Discord, no Vercel).
 
-Run:  python vercel/test_interactions.py
+Run:  python discord-endpoint/test_interactions.py
 """
 import json
 import os

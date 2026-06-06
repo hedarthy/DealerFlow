@@ -5,8 +5,8 @@ application. The gateway bot registers it on startup, but for a pure-serverless 
 run this once instead (no always-on process needed):
 
     # uses values from the repo-root .env, or pass them as env vars
-    python vercel/register_commands.py            # global (visible everywhere, ~1h to propagate)
-    DISCORD_GUILD_ID=123 python vercel/register_commands.py   # one guild, instant
+    python discord-endpoint/register_commands.py            # global (visible everywhere, ~1h to propagate)
+    DISCORD_GUILD_ID=123 python discord-endpoint/register_commands.py   # one guild, instant
 
 Reads:
   TICKER_GEX_DISCORD_BOT_TOKEN  (or DISCORD_BOT_TOKEN)  the bot token
