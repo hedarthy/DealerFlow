@@ -23,7 +23,9 @@ from spy_gex.calendar_util import (
     eastern_now, is_trading_day, cron_scheduled_et_time, market_close_hm,
     early_close_dates, SPY_GEX_SLOTS,
 )
-from spy_gex.agent import slot_decision, build_greek_matrix, _annot_grid, render_grid, SKY_KING
+from spy_gex.agent import (
+    slot_decision, build_greek_matrix, _annot_grid, render_grid, SKY_KING, _fmt_k,
+)
 
 # Union of EST + EDT UTC crons declared in spy-gex-run.yml.
 SPY_CRONS = [
@@ -136,6 +138,16 @@ def test_early_close_calendar():
     print("ok  early-close calendar (half days vs weekend-shifted holidays)")
 
 
+def test_fmt_k_skylit_style():
+    # $1,000.0K == $1,000,000; negatives use -$; zero is $0.0K.
+    assert _fmt_k(1000.0) == "$1,000.0K"
+    assert _fmt_k(-41686.1) == "-$41,686.1K"
+    assert _fmt_k(0.0) == "$0.0K"
+    assert _fmt_k(2458291.8) == "$2,458,291.8K"
+    assert _fmt_k(12345.6, 0) == "$12,346K"   # colorbar uses 0 decimals
+    print("ok  _fmt_k (Skylit $X,XXX.XK formatting)")
+
+
 def test_build_greek_matrix_missing_is_nan():
     # Two expiries sharing some strikes; a strike absent for one expiry must be NaN
     # (a dark gap), NOT 0 — so it stays distinct from a present near-zero cell.
@@ -143,10 +155,10 @@ def test_build_greek_matrix_missing_is_nan():
     window = [99.0, 100.0, 101.0]
     mat = build_greek_matrix(per_exp, window, ["06-08\nD0", "06-09\nD1"])
     assert list(mat.index) == [101.0, 100.0, 99.0]   # rows descending
-    assert mat.loc[100.0, "06-08\nD0"] == 5.0        # scaled to $M
+    assert mat.loc[100.0, "06-08\nD0"] == 5000.0     # scaled to $K (5e6 -> 5,000K)
     assert pd.isna(mat.loc[101.0, "06-09\nD1"])      # absent strike -> NaN
     assert pd.isna(mat.loc[99.0, "06-08\nD0"])       # absent everywhere -> NaN
-    print("ok  build_greek_matrix (missing -> NaN, $M scaling, descending rows)")
+    print("ok  build_greek_matrix (missing -> NaN, $K scaling, descending rows)")
 
 
 def test_annot_grid_king_and_blanks():
@@ -156,12 +168,15 @@ def test_annot_grid_king_and_blanks():
     annot = _annot_grid(mat, decimals=1)
     flat = [s for row in annot for s in row]
     kings = [s for s in flat if SKY_KING in s]
-    assert len(kings) == 1 and kings[0].startswith("250")      # single King at max |value|
+    assert len(kings) == 1 and kings[0].startswith("$250,000.0K")  # single King, K-formatted
     # Present near-zero (0.2M << 0.5% of 250M King) is blanked; absent cells are blank.
     a_idx = list(mat.index)
     assert annot[a_idx.index(100.0)][list(mat.columns).index("B")] == ""
     assert annot[a_idx.index(99.0)][list(mat.columns).index("A")] == ""
-    print("ok  _annot_grid (one King, near-zero + missing blanked)")
+    # A shown non-King value formats Skylit-style ($X,XXX.XK / -$X,XXX.XK).
+    neg = annot[a_idx.index(101.0)][list(mat.columns).index("A")]
+    assert neg == "-$3,000.0K", neg
+    print("ok  _annot_grid (one King, K-formatted, near-zero + missing blanked)")
 
 
 def test_render_grid_smoke():
@@ -205,6 +220,7 @@ if __name__ == "__main__":
     test_cumulative_zero_cross()
     test_exposure_dealer_sign()
     test_eastern_now()
+    test_fmt_k_skylit_style()
     test_build_greek_matrix_missing_is_nan()
     test_annot_grid_king_and_blanks()
     test_render_grid_smoke()
