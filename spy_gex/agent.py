@@ -30,6 +30,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
+from matplotlib.ticker import FuncFormatter
 import seaborn as sns
 
 from spy_gex.exposure import (
@@ -71,6 +72,15 @@ SKY_CMAP = "viridis"      # min-max normalised (NOT centred at 0), matching Skyl
 SKY_KING = "★"            # marks the largest-magnitude (King) strike
 
 
+def _fmt_k(v, decimals=1):
+    """Format a $-thousands value Skylit-style: ``$1,234.5K`` / ``-$1,234.5K`` / ``$0.0K``.
+
+    Inputs are already scaled to thousands of dollars (so ``$1,000.0K`` == $1,000,000).
+    """
+    sign = "-$" if v < 0 else "$"
+    return f"{sign}{abs(v):,.{decimals}f}K"
+
+
 # --------------------------------------------------------------------------- data
 
 def select_expiries(chains, effective_now):
@@ -100,13 +110,14 @@ def select_expiries(chains, effective_now):
 
 # --------------------------------------------------------------------------- render
 
-def build_greek_matrix(per_exp, window, exp_labels, divisor=1e6):
-    """Strike-rows (descending) × expiration-date-columns matrix in $M.
+def build_greek_matrix(per_exp, window, exp_labels, divisor=1e3):
+    """Strike-rows (descending) × expiration-date-columns matrix in $K (thousands).
 
     ``per_exp`` maps an expiry label -> that expiry's per-strike greek dict. ``window``
     is the shared strike axis (one set of rows for every column). A strike absent for an
     expiry becomes ``NaN`` (rendered as a dark gap), distinct from a present strike whose
-    exposure happens to net to ~0 (rendered in-scale).
+    exposure happens to net to ~0 (rendered in-scale). Values are in thousands of dollars
+    so they read as ``$1,234.5K`` (Skylit style).
     """
     strikes = sorted(window, reverse=True)
     data = {
@@ -137,7 +148,7 @@ def _annot_grid(mat, decimals):
             if not np.isfinite(v) or peak == 0 or abs(v) < floor:
                 out[i, j] = SKY_KING if king == (i, j) else ""
             else:
-                out[i, j] = f"{v:,.{decimals}f}" + (SKY_KING if king == (i, j) else "")
+                out[i, j] = _fmt_k(v, decimals) + (SKY_KING if king == (i, j) else "")
     return out
 
 
@@ -216,6 +227,8 @@ def render_grid(mat, spot, title, cbar_label, path, decimals=1):
     )
     cbar = ax.collections[0].colorbar if ax.collections else None
     _style_dark(fig, ax, cbar)
+    if cbar is not None:
+        cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: _fmt_k(x, 0)))
     _contrast_annotations(ax, mat)
 
     ax.xaxis.tick_top()
@@ -276,15 +289,16 @@ def build_summary(spot, source, slot, et, rows):
     if rows:
         msg += magnet_read(spot, rows[0]["keys"], rows[0]["regime"]) + "\n"
         header = (f"{'Exp':<12}{'DTE':>4}{'Reg':>5}{'Flip':>8}{'CallWall':>10}"
-                  f"{'PutWall':>9}{'ΣGEX':>9}{'ΣVanna':>9}{'ΣCharm':>9}")
+                  f"{'PutWall':>9}{'ΣGEX':>15}{'ΣVanna':>15}{'ΣCharm':>15}")
         lines = [header, "-" * len(header)]
         for r in rows:
             lines.append(
                 f"{r['exp']:<12}{r['dte']:>4}{('+γ' if r['regime'] == 'positive' else '-γ'):>5}"
                 f"{r['flip_s']:>8}{r['cw_s']:>10}{r['pw_s']:>9}"
-                f"{r['net_gex']:>9.0f}{r['net_vex']:>9.1f}{r['net_cex']:>9.2f}")
+                f"{_fmt_k(r['net_gex'], 0):>15}{_fmt_k(r['net_vex'], 0):>15}"
+                f"{_fmt_k(r['net_cex'], 0):>15}")
         msg += "```\n" + "\n".join(lines) + "\n```"
-        msg += "_ΣGEX $M per 1% spot · ΣVanna $M per vol-pt · ΣCharm $M per day · " \
+        msg += "_ΣGEX $K per 1% spot · ΣVanna $K per vol-pt · ΣCharm $K per day · " \
                "walls = price magnets._"
     else:
         msg += "_No usable SPY expirations with open interest right now._"
@@ -405,9 +419,9 @@ def main(force=False):
             "flip_s": (f"${keys['gamma_flip']:.0f}" if keys["gamma_flip"] else "n/a"),
             "cw_s": (f"${keys['call_wall']:.0f}" if keys["call_wall"] else "n/a"),
             "pw_s": (f"${keys['put_wall']:.0f}" if keys["put_wall"] else "n/a"),
-            "net_gex": sum(gex.values()) / 1e6,
-            "net_vex": sum(vex.values()) / 1e6,
-            "net_cex": sum(cex.values()) / 1e6,
+            "net_gex": sum(gex.values()) / 1e3,
+            "net_vex": sum(vex.values()) / 1e3,
+            "net_cex": sum(cex.values()) / 1e3,
         })
 
     if not rows:
@@ -420,15 +434,15 @@ def main(force=False):
     base = f"SPY · spot ${spot:.2f} · {label} · {dates}"
 
     grids_meta = [
-        ("gex", "Gamma (GEX)", "$M per 1% spot", "spy_gex_gamma.png", 1,
+        ("gex", "Gamma (GEX)", "$K per 1% spot", "spy_gex_gamma.png", 1,
          "🟢 **SPY Gamma (GEX)** — dealer gamma by strike × expiry. Positive (bright) "
          "rows are call-heavy pin/resistance magnets; negative (dark) rows accelerate "
          "moves. The King ★ is the dominant strike on the board."),
-        ("vex", "Vanna (VEX)", "$M per vol-pt", "spy_gex_vanna.png", 1,
+        ("vex", "Vanna (VEX)", "$K per vol-pt", "spy_gex_vanna.png", 1,
          "🟣 **SPY Vanna (VEX)** — how dealer hedging shifts when IV moves. Bright rows "
          "draw price on a vol drop / supportive flows; dark rows pressure price as vol "
          "rises. King ★ = largest vanna magnet."),
-        ("cex", "Charm (CEX)", "$M per day", "spy_gex_charm.png", 2,
+        ("cex", "Charm (CEX)", "$K per day", "spy_gex_charm.png", 1,
          "🟠 **SPY Charm (CEX)** — delta decay into expiry (time-of-day drift). Bright "
          "rows pull price up as charm hedging buys; dark rows bleed it lower. Strongest "
          "near expiry. King ★ = dominant charm strike."),
