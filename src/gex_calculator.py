@@ -218,6 +218,25 @@ def get_key_levels(gex_grid, spot=None):
     return {"gamma_flip": float(flip), "call_wall": float(call_wall), "put_wall": float(put_wall)}
 
 
+def select_window_strikes(strikes, spot, n=25):
+    """Centered strike window: up to ``n`` strikes at/below ``spot`` plus up to ``n``
+    strikes above it, returned as a single ascending list.
+
+    ``strikes`` is any iterable of numeric strikes (typically an exposure grid's
+    keys). A strike exactly equal to spot is grouped with the at/below side. Having
+    fewer than ``n`` strikes on a side (deep ITM/OTM sparsity) is fine — we just
+    return whatever exists. Used by the SPY heatmaps to show "25 up / 25 down".
+    """
+    uniq = sorted({float(k) for k in strikes if k is not None})
+    if not uniq:
+        return []
+    if not (spot and spot > 0):
+        return uniq[: 2 * n]
+    below = [k for k in uniq if k <= spot][-n:]
+    above = [k for k in uniq if k > spot][:n]
+    return below + above
+
+
 def get_regime(gex_grid):
     total_gex = sum(gex_grid.values())
     return "positive" if total_gex > 0 else "negative"

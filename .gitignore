@@ -11,6 +11,8 @@ venv/
 # Generated artifacts
 report.md
 gex_heatmap*.png
+spy_gex_report.md
+spy_gex_heatmap*.png
 previous_close.json
 reports/*
 !reports/.gitkeep

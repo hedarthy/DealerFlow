@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.market_calendar import (
     is_trading_day, nyse_holidays, cron_scheduled_et_hour, INTENDED_ET_HOUR,
+    cron_scheduled_et_time, market_close_hm, early_close_dates, SPY_GEX_SLOTS,
 )
 
 # Known NYSE full-closure holidays (verified against the published calendars),
@@ -114,9 +115,81 @@ def test_latency_does_not_double_post_or_miss():
     print("ok  latency cannot cause a double-post or a silent miss")
 
 
+# The exact SPY hourly-alert cron union shipped in spy-gex-run.yml.
+SPY_CRONS = [
+    "31 13 * * 1-5", "31 14 * * 1-5",
+    "0 14 * * 1-5", "0 15 * * 1-5", "0 16 * * 1-5", "0 17 * * 1-5",
+    "0 18 * * 1-5", "0 19 * * 1-5", "0 20 * * 1-5", "0 21 * * 1-5",
+]
+
+
+def _spy_open_slots(on_date):
+    """The ET slots the SPY agent's cron gate would fire on ``on_date``: each cron's
+    DST-correct scheduled ET time, kept iff it's an intended slot at/before the close.
+    Mirrors ``spy_gex_agent.slot_decision`` (cron path, minus runner-latency freshness)."""
+    if not is_trading_day(on_date):
+        return []
+    close = market_close_hm(on_date)
+    out = []
+    for c in SPY_CRONS:
+        hm = cron_scheduled_et_time(c, on_date)
+        if hm and hm in SPY_GEX_SLOTS and hm <= close:
+            out.append(hm)
+    return out
+
+
+def test_spy_hourly_slots_dedupe():
+    # Every full session — summer (EDT), winter (EST), and the weekday adjacent to
+    # each 2026 DST switch — must collapse the dual crons to EXACTLY the 8 intended
+    # slots, with no duplicate slot (no double-post) and none dropped (no silent miss).
+    intended = sorted(SPY_GEX_SLOTS)
+    full_sessions = [
+        date(2026, 7, 15),   # mid-summer EDT
+        date(2026, 1, 15),   # mid-winter EST
+        date(2026, 3, 6),    # Friday before spring-forward (still EST)
+        date(2026, 3, 9),    # Monday after spring-forward (now EDT)
+        date(2026, 10, 30),  # Friday before fall-back (still EDT)
+        date(2026, 11, 2),   # Monday after fall-back (now EST)
+    ]
+    for day in full_sessions:
+        assert is_trading_day(day)
+        slots = _spy_open_slots(day)
+        assert len(slots) == len(set(slots)), f"{day}: duplicate slot fired {slots}"
+        assert sorted(slots) == intended, f"{day}: slots {sorted(slots)} != {intended}"
+    print("ok  SPY dual crons collapse to the 8 intended slots (incl. DST-switch weeks)")
+
+
+def test_spy_early_close_suppresses_afternoon():
+    # Standard 1:00 PM ET half days: the afternoon (2/3/4 PM) slots must be suppressed.
+    for half in (date(2025, 11, 28), date(2025, 12, 24), date(2025, 7, 3)):
+        assert is_trading_day(half)
+        assert market_close_hm(half) == (13, 0)
+        slots = _spy_open_slots(half)
+        assert (14, 0) not in slots and (15, 0) not in slots and (16, 0) not in slots
+        assert sorted(slots) == [(9, 31), (10, 0), (11, 0), (12, 0), (13, 0)], slots
+    # A normal session keeps the regular 4:00 PM close and all 8 slots.
+    assert market_close_hm(date(2026, 6, 5)) == (16, 0)
+    assert len(_spy_open_slots(date(2026, 6, 5))) == 8
+    print("ok  SPY early-close days suppress post-13:00 slots")
+
+
+def test_early_close_calendar():
+    # Black Friday, Christmas Eve, July 3 are half days when real weekday sessions...
+    assert date(2025, 11, 28) in early_close_dates(2025)   # Black Friday 2025
+    assert date(2025, 12, 24) in early_close_dates(2025)   # Christmas Eve (Wed)
+    assert date(2025, 7, 3) in early_close_dates(2025)     # July 3 (Thu, before Fri Jul 4)
+    # ...but a weekend-shifted July 4 makes July 3 the *observed holiday*, not a half day.
+    assert date(2026, 7, 3) not in early_close_dates(2026)
+    assert not is_trading_day(date(2026, 7, 3))            # observed Independence Day
+    print("ok  early-close calendar (half days vs weekend-shifted holidays)")
+
+
 if __name__ == "__main__":
     test_known_holidays()
     test_trading_and_nontrading_days()
     test_dual_cron_collapses_to_one_run()
     test_latency_does_not_double_post_or_miss()
+    test_spy_hourly_slots_dedupe()
+    test_spy_early_close_suppresses_afternoon()
+    test_early_close_calendar()
     print("\nAll schedule tests passed.")

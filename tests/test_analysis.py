@@ -11,7 +11,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.scorer import gex_directional_adjustment as gd, price_action_adjustment as pa
-from src.gex_calculator import cumulative_zero_cross as flip
+from src.gex_calculator import cumulative_zero_cross as flip, select_window_strikes
 from src.timeutil import eastern_now
 
 # Positive-gamma book used across the directional cases.
@@ -104,6 +104,31 @@ def test_cumulative_zero_cross():
     print("ok  cumulative_zero_cross")
 
 
+def test_select_window_strikes():
+    strikes = list(range(90, 121))  # 90..120 inclusive, $1 apart
+
+    # 3 up / 3 down around spot 100: strike == spot groups with the at/below side.
+    assert select_window_strikes(strikes, 100.0, n=3) == [98.0, 99.0, 100.0, 101.0, 102.0, 103.0]
+    # Result is ascending and centered on spot.
+    w = select_window_strikes(strikes, 105.4, n=5)
+    assert w == sorted(w)
+    assert max(k for k in w if k <= 105.4) == 105.0
+    assert min(k for k in w if k > 105.4) == 106.0
+
+    # Fewer than n available below spot -> return what exists, no padding/error.
+    assert select_window_strikes(strikes, 91.0, n=5) == [90.0, 91.0, 92.0, 93.0, 94.0, 95.0, 96.0]
+
+    # Exactly n per side caps the window at 2*n and drops the far wings.
+    assert len(select_window_strikes(strikes, 105.0, n=2)) == 4
+    assert select_window_strikes(strikes, 105.0, n=2) == [104.0, 105.0, 106.0, 107.0]
+
+    # Dedupes and ignores Nones; empty / invalid spot degrade gracefully.
+    assert select_window_strikes([100, 100, None, 101], 100.0, n=5) == [100.0, 101.0]
+    assert select_window_strikes([], 100.0) == []
+    assert select_window_strikes(strikes, 0, n=2) == [90.0, 91.0, 92.0, 93.0]  # no spot -> first 2n
+    print("ok  select_window_strikes")
+
+
 def test_eastern_now():
     now = eastern_now()
     assert isinstance(now, datetime)
@@ -115,5 +140,6 @@ if __name__ == "__main__":
     test_gex_directional()
     test_price_action()
     test_cumulative_zero_cross()
+    test_select_window_strikes()
     test_eastern_now()
     print("\nAll analysis tests passed.")
