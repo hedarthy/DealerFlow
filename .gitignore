@@ -14,6 +14,9 @@ gex_heatmap*.png
 previous_close.json
 reports/*
 !reports/.gitkeep
+# On-demand /gex + local engine render scratch dirs (root-level)
+out/
+ticker_gex_out/
 
 # Agent working notes (local only)
 .sisyphus/

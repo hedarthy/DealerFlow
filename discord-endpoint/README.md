@@ -62,7 +62,7 @@ the always-on gateway bot** — you no longer need to host `ticker_gex/bot.py`.
    is. Otherwise register it without any host:
    ```bash
    # from repo root, with the bot token + app id available (e.g. in .env)
-   DISCORD_APP_ID=1512703597283115078 DISCORD_GUILD_ID=<your-server-id> \
+   DISCORD_APP_ID=<YOUR_APP_ID> DISCORD_GUILD_ID=<your-server-id> \
      python discord-endpoint/register_commands.py     # instant for one server
    ```
 3. In Discord, run `/gex TSLA`. You'll get an instant ephemeral “Queued **TSLA**…”, and the

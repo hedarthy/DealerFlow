@@ -17,28 +17,30 @@ not modify or depend on the existing SPY pipeline, the screener, or their workfl
 
 ## How requests are received
 
-A Discord **webhook is send-only** — it cannot receive a user's ticker. To *receive*
-`/gex` you need a real bot (a persistent gateway connection). Two ways to run it:
+A Discord **webhook is send-only** — it cannot receive a user's ticker. To *receive* `/gex`
+you need a "front door". Three ways:
 
 | Path | What it is | Trade-off |
 |------|------------|-----------|
+| **Serverless** (`discord-endpoint/`) | A tiny Vercel function Discord calls directly; verifies + ACKs, then fires the Actions workflow | No always-on host (~30–60s to images). **Recommended** — see [`discord-endpoint/README.md`](../discord-endpoint/README.md) |
 | **Bot** (`ticker_gex/bot.py`) | Always-on `discord.py` app; `/gex` works instantly | Needs a host that stays running |
-| **Actions fallback** (`.github/workflows/ticker-gex-run.yml`) | `workflow_dispatch` with a `ticker` input | No hosting, but you trigger it from the Actions tab, not from chat |
+| **Actions only** (`.github/workflows/ticker-gex-run.yml`) | `workflow_dispatch` with a `ticker` input | No hosting, but you trigger it from the Actions tab, not from chat |
 
-In both cases the 5 images are posted to your **webhook's channel**.
+In all cases the 5 images are posted to your **webhook's channel**.
 
 ---
 
 ## 1. Add the bot to your server
 
-Open this invite URL (note **both** scopes — `bot` *and* `applications.commands`; the
-second is what lets slash commands register):
+Open this invite URL — replace `<YOUR_APP_ID>` with your application's **Client ID** (Discord
+Developer Portal → your app → **General Information** → Application ID). Note **both** scopes —
+`bot` *and* `applications.commands`; the second is what lets slash commands register:
 
 ```
-https://discord.com/oauth2/authorize?client_id=1512703597283115078&permissions=8515702525261888&integration_type=0&scope=bot+applications.commands
+https://discord.com/oauth2/authorize?client_id=<YOUR_APP_ID>&permissions=8515702525261888&integration_type=0&scope=bot+applications.commands
 ```
 
-> Your earlier invite link only had `scope=bot`. If `/gex` ever fails to appear, re-open
+> A `bot`-only invite won't register slash commands. If `/gex` ever fails to appear, re-open
 > the URL above to authorize the `applications.commands` scope.
 
 No privileged intents are required for slash commands. (The optional `!gex` text command
