@@ -1,0 +1,50 @@
+name: Ticker Dealerflow GEX (on-demand)
+on:
+  # No cron: this is the no-host fallback for the on-demand bot. Trigger it from the
+  # Actions UI (or the API) with a ticker; it renders once and posts the 5 dealerflow
+  # messages to TICKER_GEX_DISCORD_WEBHOOK. The always-on bot (ticker_gex/bot.py) is the
+  # interactive path; this exists so any ticker can be run with no host at all.
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: 'Ticker symbol to chart (e.g. TSLA, QQQ, NVDA)'
+        type: string
+        required: true
+
+# One on-demand render at a time so concurrent dispatches don't interleave Discord posts.
+concurrency:
+  group: ticker-gex-run
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        # The engine only needs the analysis/render stack (no discord.py — that's the bot).
+        run: pip install -r requirements.txt
+      - name: Render + post ticker dealerflow
+        run: python -m ticker_gex.engine --ticker "${{ inputs.ticker }}" --out-dir ticker_gex_out
+        env:
+          TICKER_GEX_DISCORD_WEBHOOK: ${{ secrets.TICKER_GEX_DISCORD_WEBHOOK }}
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ticker-gex-${{ inputs.ticker }}
+          path: ticker_gex_out/*.png
+          if-no-files-found: ignore
+      - name: Notify Discord on failure
+        if: failure()
+        env:
+          TICKER_GEX_DISCORD_WEBHOOK: ${{ secrets.TICKER_GEX_DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sf -H "Content-Type: application/json" -X POST \
+            -d "{\"content\": \"\u274c Ticker dealerflow run for ${{ inputs.ticker }} failed \u2014 see $RUN_URL\"}" \
+            "$TICKER_GEX_DISCORD_WEBHOOK" || true

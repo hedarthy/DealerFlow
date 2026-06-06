@@ -1,0 +1,4 @@
+# Generated heatmaps + any local output dir (rendered per request; never committed).
+*.png
+out/
+ticker_gex_out/
