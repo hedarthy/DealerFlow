@@ -1,0 +1,10 @@
+# Dependencies for the on-demand ticker dealerflow bot.
+#
+# Reuse the repo's pinned analysis/render stack (pandas, numpy, matplotlib, seaborn,
+# requests, yfinance, python-dotenv) and add the Discord gateway client the bot needs to
+# *receive* /gex requests (a webhook can only send). Install from the repo root:
+#
+#   pip install -r ticker_gex/requirements.txt
+#
+-r ../requirements.txt
+discord.py>=2.3.2,<3
