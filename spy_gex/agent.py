@@ -29,6 +29,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 import seaborn as sns
 
 from spy_gex.exposure import (
@@ -153,6 +154,44 @@ def _style_dark(fig, ax, cbar):
         cbar.ax.yaxis.label.set_color(SKY_TEXT)
 
 
+def _rel_luminance(rgb):
+    """sRGB relative luminance (WCAG) of an (r,g,b) triple in 0..1."""
+    r, g, b = (
+        c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+        for c in rgb[:3]
+    )
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast_annotations(ax, mat):
+    """Recolour each cell's number for maximum contrast against *its own* viridis cell.
+
+    Seaborn's default annotation colour is a fixed light tone, which is unreadable on the
+    bright (yellow/green) end of viridis. Here every annotation is set to pure black or
+    white based on the cell's luminance, with a thin opposite-colour outline so the digits
+    stay legible even on mid-tone cells.
+    """
+    if not ax.collections:
+        return
+    mesh = ax.collections[0]
+    values = mat.to_numpy(dtype=float)
+    nrows, ncols = values.shape
+    for t in ax.texts:
+        x, y = t.get_position()          # seaborn places text at (col + .5, row + .5)
+        j, i = int(round(x - 0.5)), int(round(y - 0.5))
+        if not (0 <= i < nrows and 0 <= j < ncols):
+            continue
+        v = values[i, j]
+        if not np.isfinite(v):
+            continue
+        lum = _rel_luminance(mesh.to_rgba(v))
+        dark_on_light = lum > 0.42
+        fg = "#000000" if dark_on_light else "#ffffff"
+        halo = "#ffffff" if dark_on_light else "#000000"
+        t.set_color(fg)
+        t.set_path_effects([pe.withStroke(linewidth=1.1, foreground=halo, alpha=0.6)])
+
+
 def render_grid(mat, spot, title, cbar_label, path, decimals=1):
     """Render one greek as a Skylit-style strike×expiry heatmap and save to ``path``.
 
@@ -168,12 +207,13 @@ def render_grid(mat, spot, title, cbar_label, path, decimals=1):
     mask = ~np.isfinite(mat.to_numpy(dtype=float))  # strikes absent for an expiry -> dark gap
     sns.heatmap(
         mat, ax=ax, cmap=SKY_CMAP, annot=annot, fmt="", mask=mask,
-        annot_kws={"size": 6, "color": SKY_TEXT},
+        annot_kws={"size": 6},  # color omitted -> seaborn picks per-cell contrast (dark on light, light on dark)
         linewidths=0.4, linecolor=SKY_GRID,
         cbar_kws={"label": cbar_label, "shrink": 0.6, "pad": 0.02},
     )
     cbar = ax.collections[0].colorbar if ax.collections else None
     _style_dark(fig, ax, cbar)
+    _contrast_annotations(ax, mat)
 
     ax.xaxis.tick_top()
     ax.xaxis.set_label_position("top")
@@ -192,7 +232,7 @@ def render_grid(mat, spot, title, cbar_label, path, decimals=1):
     )
 
     fig.suptitle(title, color=SKY_TEXT, fontsize=12, fontweight="bold")
-    plt.savefig(path, dpi=120, facecolor=SKY_BG, bbox_inches="tight", pad_inches=0.35)
+    plt.savefig(path, dpi=220, facecolor=SKY_BG, bbox_inches="tight", pad_inches=0.35)
     plt.close(fig)
 
 
