@@ -1,0 +1,6 @@
+# Minimal deps for the Vercel Discord-interactions function ONLY.
+# Kept separate from the repo's heavy analysis stack (pandas/matplotlib/...) so the
+# serverless bundle stays tiny. In the Vercel project settings set
+# "Root Directory" = discord-endpoint  so this requirements.txt is the one that gets installed.
+PyNaCl>=1.5.0
+requests>=2.31.0
