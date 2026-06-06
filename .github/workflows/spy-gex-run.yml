@@ -40,7 +40,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run SPY GEX alert
-        run: python -m src.spy_gex_agent ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
+        run: python -m spy_gex.agent ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
         env:
           # Dedicated SPY channel if SPY_GEX_DISCORD_WEBHOOK_URL is set, otherwise fall
           # back to the existing screener webhook so it works out of the box.
@@ -52,8 +52,8 @@ jobs:
         with:
           name: spy-gex-report
           path: |
-            spy_gex_report.md
-            spy_gex_heatmap_*.png
+            spy_gex/spy_gex_report.md
+            spy_gex/spy_gex_*.png
           if-no-files-found: ignore
       - name: Notify Discord on failure
         if: failure()

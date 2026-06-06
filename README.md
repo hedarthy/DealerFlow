@@ -24,7 +24,6 @@ picks must also be trending. No LLM — every step is deterministic.
 | --- | --- | --- |
 | Close | Mon–Fri 4:05 PM | `python -m src.daily_options_agent --mode=close` |
 | Morning | Mon–Fri 9:10 AM | `python -m src.daily_options_agent --mode=morning` |
-| SPY dealerflow | Mon–Fri 9:31 AM + hourly 10 AM–4 PM | `python -m src.spy_gex_agent` |
 
 Pipeline: pull option chains (CBOE → yfinance fallback) → compute per-contract
 Black-Scholes **gamma, vanna and charm** and aggregate them into dealer-signed exposure
@@ -97,27 +96,6 @@ methodology for higher-probability entries.
 3. Additional candidates — table of ticker / type / strike / **OTM%** / DTE / score / vol-OI
    / edge.
 
-## SPY hourly dealerflow alert (gamma · vanna · charm)
-
-A second, **independent** alert (`src/spy_gex_agent.py` + `.github/workflows/spy-gex-run.yml`)
-focuses purely on **SPY dealer positioning** — no scoring, no trade picks, and **none** of
-the SeanTrades 8/21-EMA layer. It answers one question: *where is dealer flow magnetising
-price?* Every NYSE trading day it posts, on a schedule, one three-panel **gamma (GEX) /
-vanna (VEX) / charm (CEX)** heatmap per expiration for the **five nearest SPY expiries**
-(0DTE today through ~four sessions out), each windowed to the **25 strikes above and 25
-at/below spot**, plus a "magnet map" summary: spot, γ-regime, gamma flip, and the call/put
-walls (the price magnets) with net GEX/VEX/CEX per expiry. Same data path as the screener
-(CBOE real OI/IV first, `yfinance` fallback) and the same Black-Scholes greeks in
-`gex_calculator.py`.
-
-**Schedule (ET, trading days):** one minute after the open (**9:31**), then on the hour
-through the close (**10:00, 11:00, … 16:00**). Half-day early closes (Black Friday, Christmas
-Eve, July 3) automatically suppress the post-1:00 PM slots. Like the screener it ships dual
-EDT/EST UTC crons; each cron maps to exactly one DST-correct ET time per day and runs only
-when that lands on an intended slot, so the off-season duplicate self-skips (no double-post).
-A freshness cap skips any slot whose runner starts more than 20 minutes late so a backlogged
-run can't post stale, overlapping alerts. `--force` bypasses the gate for local/manual runs.
-
 ## Setup
 
 ### 1. Discord webhook
@@ -126,9 +104,7 @@ The code reads the webhook from the `DISCORD_WEBHOOK_URL` environment variable �
 
 - **GitHub Actions:** add a repository secret named `OPTIONS_DISCORD_WEBHOOK_URL`
   (Settings → Secrets and variables → Actions). Both workflows map it to the
-  `DISCORD_WEBHOOK_URL` environment variable via `env`. The SPY dealerflow alert prefers an
-  optional `SPY_GEX_DISCORD_WEBHOOK_URL` secret (to post to its own channel) and falls back
-  to `OPTIONS_DISCORD_WEBHOOK_URL` when it isn't set, so it works with no extra setup.
+  `DISCORD_WEBHOOK_URL` environment variable via `env`.
 - **Local:** `cp .env.example .env` and set `DISCORD_WEBHOOK_URL`. `.env` is gitignored.
 
 ### 2. Run locally
@@ -136,7 +112,6 @@ The code reads the webhook from the `DISCORD_WEBHOOK_URL` environment variable �
 ```bash
 pip install -r requirements.txt
 python -m src.daily_options_agent --mode=close
-python -m src.spy_gex_agent --force          # SPY hourly dealerflow heatmaps (any time)
 ```
 
 Run from the repo root so the `src` package resolves.
@@ -152,7 +127,6 @@ each day, year-round:
 | --- | --- | --- |
 | Morning | 09:10 | `10 13 * * 1-5` / `10 14 * * 1-5` |
 | Close | 16:05 | `5 20 * * 1-5` / `5 21 * * 1-5` |
-| SPY dealerflow | 09:31 + hourly 10:00–16:00 | union of `31 13`/`31 14` + `0 14`…`0 21` (see [SPY alert](#spy-hourly-dealerflow-alert-gamma--vanna--charm)) |
 
 The gate (`src/market_calendar.py` + the guard in `main()`):
 
@@ -266,17 +240,15 @@ dealer-positioning signal correct.
 .
 ├── .github/workflows/
 │   ├── morning-run.yml   # 09:10 ET dual-DST cron + workflow_dispatch
-│   ├── close-run.yml     # 16:05 ET dual-DST cron + workflow_dispatch
-│   └── spy-gex-run.yml   # 09:31 + hourly 10:00-16:00 ET dual-DST crons + workflow_dispatch
+│   └── close-run.yml     # 16:05 ET dual-DST cron + workflow_dispatch
 ├── src/
 │   ├── daily_options_agent.py  # entrypoint: orchestration, selection, Discord messages
-│   ├── spy_gex_agent.py        # entrypoint: SPY-only hourly gamma/vanna/charm GEX heatmaps
-│   ├── gex_calculator.py       # BS greeks, exposure grids, key levels, regimes, strike window
+│   ├── gex_calculator.py       # BS greeks, exposure grids, key levels, regimes
 │   ├── cboe_source.py          # CBOE real-greeks chain fetch (yfinance is the fallback)
 │   ├── scorer.py               # composite score + EMA & GEX-structure additive overlays
 │   ├── strategy_generator.py   # spot-anchored entry/target/stop + R/R bullets
 │   ├── timeutil.py             # eastern_now(): US/Eastern market clock (UTC-runner safe)
-│   ├── market_calendar.py      # NYSE calendar + early-close + cron gate/slots (stdlib only)
+│   ├── market_calendar.py      # NYSE trading-day calendar + cron gate (stdlib only)
 │   └── utils.py                # previous-close persistence + send_discord
 ├── tests/
 │   ├── test_analysis.py        # offline: greeks flip, scoring, both overlays (no network)
@@ -379,7 +351,6 @@ dealer-positioning signal correct.
 ```bash
 pip install -r requirements.txt
 python -m src.daily_options_agent --mode=morning --force   # local run; no post without webhook
-python -m src.spy_gex_agent --force                        # SPY dealerflow heatmaps (local)
 python tests/test_analysis.py && python tests/test_schedule.py   # offline, stdlib-only
 ```
 
@@ -391,5 +362,5 @@ heatmaps, so it's safe for development.
 - Branch → PR → merge to `main`; keep changes surgical and update these docs when behaviour
   changes.
 - Commit trailer: `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`.
-- Gitignored (do not commit): `.env`, `report.md`, `gex_heatmap*.png`, `spy_gex_report.md`,
-  `spy_gex_heatmap*.png`, `previous_close.json`, `reports/*`.
+- Gitignored (do not commit): `.env`, `report.md`, `gex_heatmap*.png`, `previous_close.json`,
+  `reports/*`.

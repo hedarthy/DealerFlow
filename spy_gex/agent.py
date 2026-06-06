@@ -1,20 +1,22 @@
 """Hourly SPY dealer-flow alert: gamma / vanna / charm GEX heatmaps to Discord.
 
-A standalone, additive alert (it does not touch the twice-daily watchlist screener
-in ``daily_options_agent.py`` and deliberately ignores that pipeline's SeanTrades
-8/21-EMA price-action layer). For SPY it pulls the option chain (CBOE real exchange
-OI/IV first, ``yfinance`` fallback), computes the dealer-signed gamma (GEX), vanna
-(VEX) and charm (CEX) exposure grids per expiration, and renders one three-panel
-heatmap per expiration so a trader can see where dealer positioning magnetises price
-— the gamma flip and the call/put walls.
+A standalone, self-contained alert. It does not touch — and does not import from —
+the twice-daily watchlist screener in ``src/`` (and deliberately ignores that
+pipeline's SeanTrades 8/21-EMA price-action layer). For SPY it pulls the option chain
+(CBOE real exchange OI/IV first, ``yfinance`` fallback), computes the dealer-signed
+gamma (GEX), vanna (VEX) and charm (CEX) exposure grids per expiration, and renders
+one Skylit-style heatmap per greek — strike rows by expiration-date columns — so a
+trader can see where dealer positioning magnetises price across the curve (the gamma
+flip and the call/put walls). A white line + tag marks spot; the largest-magnitude
+"King" strike is starred.
 
 It runs every NYSE trading day at one minute after the open (9:31 ET) and then on the
 hour through the close (10:00 .. 16:00 ET). Expirations rendered: the five nearest SPY
 expiries on/after the run date (0DTE today through ~four sessions out). Each heatmap
 windows to the 25 strikes above and 25 at/below spot.
 
-Run:  ``python -m src.spy_gex_agent [--force]``  (``--force`` bypasses the schedule
-gate; a local run with no webhook renders the images and prints, posting nothing).
+Run:  ``python -m spy_gex.agent [--force]``  (``--force`` bypasses the schedule gate; a
+local run with no webhook renders the images and prints, posting nothing).
 """
 import argparse
 import os
@@ -22,28 +24,34 @@ import time
 from datetime import datetime
 
 from dotenv import load_dotenv
-import yfinance as yf
+import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from src.gex_calculator import (
+from spy_gex.exposure import (
     compute_exposure_grids, get_key_levels, get_regime, get_vanna_regime,
     select_window_strikes,
 )
-from src.cboe_source import fetch_cboe
-from src.utils import send_discord
-from src.timeutil import eastern_now
-from src.market_calendar import (
-    is_trading_day, cron_scheduled_et_time, market_close_hm, SPY_GEX_SLOTS,
+from spy_gex.data_source import get_chains
+from spy_gex.notify import send_discord
+from spy_gex.calendar_util import (
+    eastern_now, is_trading_day, cron_scheduled_et_time, market_close_hm, SPY_GEX_SLOTS,
 )
 
-# Resolve relative paths (.env, artifacts) from the repo root regardless of the
-# caller's working directory, matching daily_options_agent.
-os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-load_dotenv()
+# Resolve artifacts inside this package and load the shared repo-root .env, without
+# changing the process working directory (so we never disturb other tools).
+PKG_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(PKG_DIR)
+load_dotenv(os.path.join(REPO_ROOT, ".env"))
+
+
+def _art(name):
+    """Absolute path to an output artifact, kept inside the package folder."""
+    return os.path.join(PKG_DIR, name)
+
 
 TICKER = "SPY"
 N_EXPIRIES = 5          # current day + ~4 sessions out
@@ -53,53 +61,16 @@ SLOT_FRESHNESS_MIN = 20  # skip an intraday slot whose run starts more than this
 # delay window before dropping it — a moderately late close snapshot is still worth posting.
 CLOSE_FRESHNESS_MIN = 45
 
-
-def _f(x, default=0.0):
-    try:
-        v = float(x)
-    except (TypeError, ValueError):
-        return default
-    return v if v == v else default  # filter NaN
+# Skylit-AI-style dark heatmap palette (viridis on near-black, white text/spot tag).
+SKY_BG = "#0b0d10"        # figure / axes background
+SKY_TEXT = "#e6e8eb"      # ticks, labels, titles
+SKY_GRID = "#1b1f24"      # cell separators / colorbar outline
+SKY_SPOT = "#ffffff"      # spot line + tag
+SKY_CMAP = "viridis"      # min-max normalised (NOT centred at 0), matching Skylit
+SKY_KING = "★"            # marks the largest-magnitude (King) strike
 
 
 # --------------------------------------------------------------------------- data
-
-def get_chains(ticker):
-    """Return ``(spot, {expiry: df}, source)`` for ``ticker`` or ``None``.
-
-    Prefer CBOE (real exchange OI/IV) and fall back to yfinance so a CBOE outage
-    never silences the alert. Both sources yield DataFrames with the same columns
-    (strike, opt_type, openInterest, impliedVolatility, volume, lastPrice,
-    contractSymbol), so downstream processing is source-agnostic. CBOE and yfinance
-    are never merged — they are independent snapshots.
-    """
-    cb = fetch_cboe(ticker)
-    if cb:
-        spot, chains = cb
-        if spot > 0 and chains:
-            return spot, chains, "cboe"
-    stock = yf.Ticker(ticker)
-    hist = stock.history(period="1d")
-    if hist.empty:
-        return None
-    spot = _f(hist["Close"].iloc[-1])
-    if spot <= 0:
-        return None
-    chains = {}
-    for exp_str in (stock.options or [])[:8]:
-        try:
-            chain = stock.option_chain(exp_str)
-            calls = chain.calls.copy()
-            calls["opt_type"] = "call"
-            puts = chain.puts.copy()
-            puts["opt_type"] = "put"
-            chains[exp_str] = pd.concat([calls, puts], ignore_index=True)
-        except Exception:
-            continue
-    if not chains:
-        return None
-    return spot, chains, "yfinance"
-
 
 def select_expiries(chains, effective_now):
     """The ``N_EXPIRIES`` nearest expiries on/after the run date.
@@ -128,47 +99,100 @@ def select_expiries(chains, effective_now):
 
 # --------------------------------------------------------------------------- render
 
-def _panel(grid, window):
-    """A single-column, descending-strike DataFrame (in $M) for one greek grid."""
-    rows = [(k, grid.get(k, 0.0) / 1e6) for k in sorted(window, reverse=True)]
-    return pd.DataFrame(rows, columns=["strike", "val"]).set_index("strike")[["val"]]
+def build_greek_matrix(per_exp, window, exp_labels, divisor=1e6):
+    """Strike-rows (descending) × expiration-date-columns matrix in $M.
+
+    ``per_exp`` maps an expiry label -> that expiry's per-strike greek dict. ``window``
+    is the shared strike axis (one set of rows for every column). A strike absent for an
+    expiry becomes ``NaN`` (rendered as a dark gap), distinct from a present strike whose
+    exposure happens to net to ~0 (rendered in-scale).
+    """
+    strikes = sorted(window, reverse=True)
+    data = {
+        label: [
+            (per_exp[label][k] / divisor if (label in per_exp and k in per_exp[label])
+             else np.nan)
+            for k in strikes
+        ]
+        for label in exp_labels
+    }
+    return pd.DataFrame(data, index=strikes, columns=exp_labels)
 
 
-def render_heatmap(spot, exp, dte, grids, keys, path):
-    """Three-panel gamma/vanna/charm dealer-exposure heatmap for one expiration."""
-    gex, vex, cex = grids
-    window = select_window_strikes(gex.keys(), spot, WINDOW_STRIKES)
-    g = _panel(gex, window).rename(columns={"val": "GEX"})
-    v = _panel(vex, window).rename(columns={"val": "VEX"})
-    c = _panel(cex, window).rename(columns={"val": "CEX"})
+def _annot_grid(mat, decimals):
+    """String annotations: blank missing/near-zero cells, star the single King (max |value|)."""
+    arr = mat.to_numpy(dtype=float)
+    out = np.empty(arr.shape, dtype=object)
+    if arr.size == 0:
+        return out
+    absarr = np.abs(arr)
+    has_value = np.isfinite(absarr).any()
+    peak = float(np.nanmax(absarr)) if has_value else 0.0
+    floor = 0.005 * peak  # hide cells under 0.5% of the King to cut clutter
+    king = np.unravel_index(np.nanargmax(absarr), arr.shape) if peak > 0 else None
+    for i in range(arr.shape[0]):
+        for j in range(arr.shape[1]):
+            v = arr[i, j]
+            if not np.isfinite(v) or peak == 0 or abs(v) < floor:
+                out[i, j] = SKY_KING if king == (i, j) else ""
+            else:
+                out[i, j] = f"{v:,.{decimals}f}" + (SKY_KING if king == (i, j) else "")
+    return out
 
-    height = max(8.0, 0.30 * len(window) + 2.0)
-    fig, axes = plt.subplots(1, 3, figsize=(15, height))
-    ann = {"size": 6}
-    sns.heatmap(g, annot=True, fmt=".1f", cmap="RdYlGn", center=0, ax=axes[0],
-                annot_kws=ann, cbar_kws={"label": "$M / 1% spot"})
-    axes[0].set_title("Gamma (GEX)")
-    axes[0].set_xlabel("")
-    axes[0].set_ylabel("Strike")
-    sns.heatmap(v, annot=True, fmt=".1f", cmap="PuOr", center=0, ax=axes[1],
-                annot_kws=ann, cbar_kws={"label": "$M / vol-pt"}, yticklabels=False)
-    axes[1].set_title("Vanna (VEX)")
-    axes[1].set_xlabel("")
-    axes[1].set_ylabel("")
-    sns.heatmap(c, annot=True, fmt=".2f", cmap="BrBG", center=0, ax=axes[2],
-                annot_kws=ann, cbar_kws={"label": "$M / day"}, yticklabels=False)
-    axes[2].set_title("Charm (CEX)")
-    axes[2].set_xlabel("")
-    axes[2].set_ylabel("")
 
-    def lvl(x):
-        return f"${x:.0f}" if x else "n/a"
+def _style_dark(fig, ax, cbar):
+    """Apply the Skylit dark theme to a heatmap axis + its colorbar."""
+    fig.patch.set_facecolor(SKY_BG)
+    ax.set_facecolor(SKY_BG)
+    ax.tick_params(colors=SKY_TEXT, labelsize=8)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    if cbar is not None:
+        cbar.outline.set_edgecolor(SKY_GRID)
+        cbar.ax.yaxis.set_tick_params(color=SKY_TEXT, labelcolor=SKY_TEXT)
+        cbar.ax.yaxis.label.set_color(SKY_TEXT)
 
-    fig.suptitle(
-        f"SPY {exp} (DTE {dte}) — spot ${spot:.2f} | γflip {lvl(keys['gamma_flip'])} · "
-        f"call wall {lvl(keys['call_wall'])} · put wall {lvl(keys['put_wall'])}")
-    plt.tight_layout()
-    plt.savefig(path, dpi=110)
+
+def render_grid(mat, spot, title, cbar_label, path, decimals=1):
+    """Render one greek as a Skylit-style strike×expiry heatmap and save to ``path``.
+
+    Dark background, viridis (min-max) colour scale, a white dashed spot line + tag,
+    dates across the top, and the King strike starred.
+    """
+    strikes = list(mat.index)
+    nrows, ncols = mat.shape
+    height = max(9.0, 0.30 * nrows + 1.6)
+    width = max(7.5, 2.0 + 1.5 * ncols)
+    fig, ax = plt.subplots(figsize=(width, height))
+    annot = _annot_grid(mat, decimals)
+    mask = ~np.isfinite(mat.to_numpy(dtype=float))  # strikes absent for an expiry -> dark gap
+    sns.heatmap(
+        mat, ax=ax, cmap=SKY_CMAP, annot=annot, fmt="", mask=mask,
+        annot_kws={"size": 6, "color": SKY_TEXT},
+        linewidths=0.4, linecolor=SKY_GRID,
+        cbar_kws={"label": cbar_label, "shrink": 0.6, "pad": 0.02},
+    )
+    cbar = ax.collections[0].colorbar if ax.collections else None
+    _style_dark(fig, ax, cbar)
+
+    ax.xaxis.tick_top()
+    ax.xaxis.set_label_position("top")
+    ax.set_xticklabels(mat.columns, rotation=0, color=SKY_TEXT, fontsize=8)
+    ax.set_yticklabels(strikes, rotation=0, color=SKY_TEXT, fontsize=7)
+    ax.set_ylabel("")
+
+    # Spot line + tag: rows run high→low, so the boundary sits below every strike > spot.
+    n_above = sum(1 for k in strikes if k > spot)
+    ax.axhline(n_above, color=SKY_SPOT, lw=1.6, ls=(0, (5, 2)), zorder=5)
+    ax.annotate(
+        f"spot ${spot:.2f}", xy=(0, n_above), xycoords=("axes fraction", "data"),
+        xytext=(-8, 0), textcoords="offset points", ha="right", va="center",
+        color=SKY_BG, fontsize=7.5, fontweight="bold", clip_on=False, zorder=6,
+        bbox=dict(boxstyle="round,pad=0.3", fc=SKY_SPOT, ec="none"),
+    )
+
+    fig.suptitle(title, color=SKY_TEXT, fontsize=12, fontweight="bold")
+    plt.savefig(path, dpi=120, facecolor=SKY_BG, bbox_inches="tight", pad_inches=0.35)
     plt.close(fig)
 
 
@@ -212,7 +236,6 @@ def build_summary(spot, source, slot, et, rows):
                   f"{'PutWall':>9}{'ΣGEX':>9}{'ΣVanna':>9}{'ΣCharm':>9}")
         lines = [header, "-" * len(header)]
         for r in rows:
-            k = r["keys"]
             lines.append(
                 f"{r['exp']:<12}{r['dte']:>4}{('+γ' if r['regime'] == 'positive' else '-γ'):>5}"
                 f"{r['flip_s']:>8}{r['cw_s']:>10}{r['pw_s']:>9}"
@@ -314,8 +337,11 @@ def main(force=False):
         _post(f"# 🧲 SPY Dealerflow — {label}\n\n_No SPY expirations available right now._")
         return
 
-    rows, images = [], []
-    for idx, (exp, dte) in enumerate(expiries, 1):
+    rows = []
+    per_exp = {"gex": {}, "vex": {}, "cex": {}}
+    exp_labels = []
+    all_strikes = set()
+    for exp, dte in expiries:
         df = chains[exp]
         gex, vex, cex = compute_exposure_grids(df, spot, exp)
         if not gex:
@@ -324,23 +350,52 @@ def main(force=False):
         keys = get_key_levels(gex, spot)
         regime = get_regime(gex)
         vanna_regime = get_vanna_regime(vex)
-        net_gex = sum(gex.values()) / 1e6
-        net_vex = sum(vex.values()) / 1e6
-        net_cex = sum(cex.values()) / 1e6
-        png = f"spy_gex_heatmap_{idx}.png"
-        render_heatmap(spot, exp, dte, (gex, vex, cex), keys, png)
+        col = f"{exp[5:]}\nD{dte}"   # column header: MM-DD over its DTE
+        exp_labels.append(col)
+        per_exp["gex"][col] = gex
+        per_exp["vex"][col] = vex
+        per_exp["cex"][col] = cex
+        all_strikes.update(gex.keys())
         rows.append({
-            "exp": exp, "dte": dte, "regime": regime, "keys": keys,
+            "exp": exp, "dte": dte, "regime": regime, "vanna_regime": vanna_regime,
+            "keys": keys,
             "flip_s": (f"${keys['gamma_flip']:.0f}" if keys["gamma_flip"] else "n/a"),
             "cw_s": (f"${keys['call_wall']:.0f}" if keys["call_wall"] else "n/a"),
             "pw_s": (f"${keys['put_wall']:.0f}" if keys["put_wall"] else "n/a"),
-            "net_gex": net_gex, "net_vex": net_vex, "net_cex": net_cex,
+            "net_gex": sum(gex.values()) / 1e6,
+            "net_vex": sum(vex.values()) / 1e6,
+            "net_cex": sum(cex.values()) / 1e6,
         })
-        caption = (f"**SPY {exp} · DTE {dte}** — {'+γ' if regime == 'positive' else '-γ'} · "
-                   f"vanna {vanna_regime} · γflip {_rel(keys['gamma_flip'], spot)} · "
-                   f"call wall {_rel(keys['call_wall'], spot)} · "
-                   f"put wall {_rel(keys['put_wall'], spot)} · ΣGEX {net_gex:.0f}M/1%")
-        images.append((caption, png))
+
+    if not rows:
+        print("No SPY expirations with open interest; nothing to render.")
+        _post(f"# 🧲 SPY Dealerflow — {label}\n\n_No SPY expirations with open interest right now._")
+        return
+
+    window = select_window_strikes(all_strikes, spot, WINDOW_STRIKES)
+    dates = " / ".join(r["exp"] for r in rows)
+    base = f"SPY · spot ${spot:.2f} · {label} · {dates}"
+
+    grids_meta = [
+        ("gex", "Gamma (GEX)", "$M per 1% spot", "spy_gex_gamma.png", 1,
+         "🟢 **SPY Gamma (GEX)** — dealer gamma by strike × expiry. Positive (bright) "
+         "rows are call-heavy pin/resistance magnets; negative (dark) rows accelerate "
+         "moves. The King ★ is the dominant strike on the board."),
+        ("vex", "Vanna (VEX)", "$M per vol-pt", "spy_gex_vanna.png", 1,
+         "🟣 **SPY Vanna (VEX)** — how dealer hedging shifts when IV moves. Bright rows "
+         "draw price on a vol drop / supportive flows; dark rows pressure price as vol "
+         "rises. King ★ = largest vanna magnet."),
+        ("cex", "Charm (CEX)", "$M per day", "spy_gex_charm.png", 2,
+         "🟠 **SPY Charm (CEX)** — delta decay into expiry (time-of-day drift). Bright "
+         "rows pull price up as charm hedging buys; dark rows bleed it lower. Strongest "
+         "near expiry. King ★ = dominant charm strike."),
+    ]
+    images = []
+    for key, name, unit, fname, dec, caption in grids_meta:
+        mat = build_greek_matrix(per_exp[key], window, exp_labels)
+        path = _art(fname)
+        render_grid(mat, spot, f"{name} — {base}", unit, path, decimals=dec)
+        images.append((caption, path))
 
     summary = build_summary(spot, source, slot, et, rows)
     _post(summary)
@@ -349,9 +404,9 @@ def main(force=False):
         _post(caption, png)
         time.sleep(1)
 
-    with open("spy_gex_report.md", "w") as f:
+    with open(_art("spy_gex_report.md"), "w") as f:
         f.write(summary + "\n\n" + "\n\n".join(c for c, _ in images))
-    print(f"✅ SPY GEX alert posted — {len(images)} expirations, source {source}")
+    print(f"✅ SPY GEX alert posted — {len(rows)} expiries × 3 greek grids, source {source}")
 
 
 if __name__ == "__main__":

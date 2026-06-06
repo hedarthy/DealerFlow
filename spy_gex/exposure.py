@@ -1,18 +1,18 @@
-"""Dealer-positioning greeks and exposure profiles.
+"""Dealer-positioning greeks and exposure profiles (vendored for the SPY alert).
 
-Computes per-contract Black-Scholes gamma, vanna and charm (no scipy dependency —
-the normal CDF/PDF come from ``math``), then aggregates them into per-strike
-exposure grids signed by dealer positioning (calls +1, puts -1).
+Self-contained copy of the Black-Scholes gamma/vanna/charm math used to build the
+per-strike dealer-signed exposure grids (calls +1, puts -1). No scipy dependency —
+the normal CDF/PDF come from ``math``. Kept independent of ``src/`` so this alert
+can never be broken by, or break, the twice-daily screener.
 
-- GEX  (gamma exposure): dealer-delta $ shift per 1% spot move.
-- VEX  (vanna exposure): dealer-delta $ shift per 1 vol-point change in IV.
-- CEX  (charm exposure): dealer-delta $ shift per calendar day (decay).
+- GEX (gamma exposure): dealer-delta $ shift per 1% spot move.
+- VEX (vanna exposure): dealer-delta $ shift per 1 vol-point change in IV.
+- CEX (charm exposure): dealer-delta $ shift per calendar day (decay).
 """
-
 from datetime import datetime
 from math import erf, exp, log, pi, sqrt
 
-from src.timeutil import eastern_now
+from spy_gex.calendar_util import eastern_now
 
 RISK_FREE = 0.05
 _SQRT2 = sqrt(2.0)
@@ -38,9 +38,9 @@ def _norm_cdf(x):
 def bs_greeks(S, K, T, r, sigma):
     """Return per-share gamma, vanna and charm for a European option.
 
-    Gamma and vanna are identical for calls and puts; charm is too when the
-    dividend yield is zero, which we assume. Vanna is per 1.00 (i.e. 100 vol
-    points) change in sigma; charm is per year. Dealer sign is applied later.
+    Gamma and vanna are identical for calls and puts; charm is too when the dividend
+    yield is zero, which we assume. Vanna is per 1.00 (i.e. 100 vol points) change in
+    sigma; charm is per year. Dealer sign is applied later.
     """
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
         return 0.0, 0.0, 0.0
@@ -57,10 +57,10 @@ def bs_greeks(S, K, T, r, sigma):
 def _expiry_T(expiry):
     """Year-fraction to expiry, measured to the 16:00 close on the expiry date.
 
-    Using calendar ``.days`` (the old approach) collapses every 0-2 DTE option to a
-    ~0.01yr floor (~3.65 days), badly distorting the greeks for exactly the chains
-    this screener targets. We instead use seconds-to-close and floor at one hour so
-    near-expiry gamma stays large-but-finite rather than blowing up at T->0.
+    Using calendar ``.days`` collapses every 0-2 DTE option to a ~0.01yr floor,
+    badly distorting the greeks for exactly the chains this targets. We instead use
+    seconds-to-close and floor at one hour so near-expiry gamma stays large-but-finite
+    rather than blowing up at T->0.
     """
     floor = 1.0 / (365.25 * 24.0)  # one hour, in years
     if expiry:
@@ -91,10 +91,6 @@ def contract_exposures(spot, strike, T, iv, oi, sign):
     - GEX: $ of dealer delta per 1% spot move   (gamma * notional * S^2 * 0.01)
     - VEX: $ of dealer delta per 1 vol-point     (vanna is per 1.00 sigma -> * 0.01)
     - CEX: $ of dealer delta per calendar day     (charm is per year -> / 365.25)
-
-    These are uniform positive rescales of the raw greeks, so per-grid rankings,
-    flip locations and normalised score components are unchanged — only the
-    displayed magnitudes become interpretable.
     """
     gamma, vanna, charm = bs_greeks(spot, strike, T, RISK_FREE, iv)
     notional = oi * 100 * sign
@@ -108,8 +104,8 @@ def compute_exposure_grids(df, spot, expiry=None):
     """Aggregate GEX/VEX/CEX per strike across an option chain.
 
     Contracts with no open interest, a non-positive strike, or no usable implied
-    volatility are skipped: fabricating an IV (the old code forced 0.3) invents
-    dealer exposure that isn't really there and pollutes the regime/flip signals.
+    volatility are skipped: fabricating an IV invents dealer exposure that isn't
+    really there and pollutes the regime/flip signals.
     """
     gex, vex, cex = {}, {}, {}
     T = _expiry_T(expiry)
@@ -132,30 +128,21 @@ def compute_gex_grid(df, spot, expiry=None):
 
 
 def cumulative_zero_cross(grid, spot=None, window=0.25, min_frac=0.05):
-    """Strike where cumulative exposure (summed low->high strike) crosses zero.
-
-    This is the gamma/vanna "flip" — the balance point between negative (put-side)
-    and positive (call-side) exposure — and should sit near spot, unlike "smallest
-    |x|" which would always pick a deep-OTM ~zero strike.
+    """Strike where cumulative exposure (summed low->high strike) crosses zero — the
+    gamma/vanna "flip", the balance point between negative (put-side) and positive
+    (call-side) exposure, which should sit near spot.
 
     For 0-2 DTE chains, exposure at deep-OTM strikes is ~0 but carries tiny mixed
-    signs that can trigger a spurious crossing in the wings. We guard against that in
-    two ways so the flip stays a meaningful, stable near-money level:
+    signs that can trigger a spurious crossing in the wings. We guard against that:
 
     * ``window`` (±25% of spot) restricts the search to near-money strikes. If spot is
-      given but no strike falls in that window we return ``0.0`` rather than scanning the
-      full chain (which would reintroduce far-flip instability on a stale/split spot).
+      given but no strike falls in that window we return ``0.0``.
     * ``min_frac`` ignores any crossing where the cumulative never moved past that
-      fraction (5%) of the *windowed* gross exposure — i.e. wing wiggles around zero.
-      Scaling to windowed (not whole-chain) gross keeps one huge far-OTM strike from
-      inflating the bar and masking a real near-money flip.
-    * When several genuine crossings remain we return the one **nearest spot**, not
-      the first one encountered scanning upward (which could be a low-strike blip).
+      fraction (5%) of the *windowed* gross exposure (wing wiggles around zero).
+    * When several genuine crossings remain we return the one nearest spot.
 
     A genuinely one-sided near-money book has no flip in range; we return ``0.0`` so
-    callers treat the structure as neutral (the scorer's directional overlay and the
-    strategy bullets both special-case a zero/unknown flip) rather than inventing a
-    far, unstable level.
+    callers treat the structure as neutral rather than inventing a far, unstable level.
     """
     if not grid:
         return 0.0
@@ -166,15 +153,10 @@ def cumulative_zero_cross(grid, spot=None, window=0.25, min_frac=0.05):
         lo, hi = spot * (1.0 - window), spot * (1.0 + window)
         windowed = [k for k in all_strikes if lo <= k <= hi]
         if not windowed:
-            # Spot is set but no strike sits within the search window (stale/split spot
-            # or a malformed chain). Refuse to invent a far flip; treat as neutral.
             return 0.0
         strikes = windowed
         base = sum(grid[k] for k in all_strikes if k < lo)  # carry below-window mass
 
-    # Scale the significance threshold to the exposure actually in play across the
-    # scanned (near-money) strikes — NOT the whole chain — so a single huge far-OTM
-    # strike outside the window can't inflate the bar and mask a real near-money flip.
     gross = sum(abs(grid[k]) for k in strikes)
     thresh = min_frac * gross if gross else 0.0
 
@@ -185,16 +167,10 @@ def cumulative_zero_cross(grid, spot=None, window=0.25, min_frac=0.05):
     for k in strikes:
         cum += grid[k]
         if (prev_c < 0 <= cum) or (prev_c > 0 >= cum):
-            # Only count it if the cumulative actually carried real mass on one side
-            # (kills deep-OTM wing wiggles around zero).
             if max(abs(prev_c), abs(cum)) >= thresh:
                 if prev_s is None or not (spot and spot > 0):
                     crossings.append(k)
                 else:
-                    # Attribute the flip to a bracketing strike: nearest spot, and on a
-                    # distance tie the endpoint whose cumulative is closer to zero (i.e.
-                    # nearer the true crossing). Keeps a big jump out of a far wing from
-                    # pinning the flip on the wrong side.
                     chosen = min(((prev_s, prev_c), (k, cum)),
                                  key=lambda sc: (abs(sc[0] - spot), abs(sc[1])))[0]
                     crossings.append(chosen)
@@ -218,6 +194,24 @@ def get_key_levels(gex_grid, spot=None):
     return {"gamma_flip": float(flip), "call_wall": float(call_wall), "put_wall": float(put_wall)}
 
 
+def select_window_strikes(strikes, spot, n=25):
+    """Centered strike window: up to ``n`` strikes at/below ``spot`` plus up to ``n``
+    strikes above it, returned as a single ascending list.
+
+    A strike exactly equal to spot is grouped with the at/below side. Having fewer
+    than ``n`` strikes on a side (deep ITM/OTM sparsity) is fine — we return whatever
+    exists. Used by the SPY heatmaps to show "25 up / 25 down".
+    """
+    uniq = sorted({float(k) for k in strikes if k is not None})
+    if not uniq:
+        return []
+    if not (spot and spot > 0):
+        return uniq[: 2 * n]
+    below = [k for k in uniq if k <= spot][-n:]
+    above = [k for k in uniq if k > spot][:n]
+    return below + above
+
+
 def get_regime(gex_grid):
     total_gex = sum(gex_grid.values())
     return "positive" if total_gex > 0 else "negative"
@@ -225,7 +219,7 @@ def get_regime(gex_grid):
 
 def get_vanna_regime(vex_grid):
     """Sign of net dealer vanna. With VEX = d(dealer delta)/d(sigma), a positive net
-    forces dealer *buying* when IV falls (price support) and selling when IV rises;
-    a negative net does the opposite."""
+    forces dealer *buying* when IV falls (price support) and selling when IV rises; a
+    negative net does the opposite."""
     total = sum(vex_grid.values())
     return "positive" if total > 0 else "negative"

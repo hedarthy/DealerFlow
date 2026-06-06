@@ -16,15 +16,6 @@ from datetime import date, datetime, timedelta
 # (EST + EDT) UTC crons collapse to exactly one real run per day, year-round.
 INTENDED_ET_HOUR = {"morning": 9, "close": 16}
 
-# Intended ET (hour, minute) slots for the hourly SPY dealerflow alert: one minute
-# after the open, then on the hour through the close. The dual EST/EDT UTC crons in
-# spy-gex-run.yml each map to exactly ONE ET time per date (DST-correct), and the
-# agent runs only when that scheduled ET time lands on one of these slots — so the
-# off-DST cron self-skips and there is no double-post (see cron_scheduled_et_time).
-SPY_GEX_SLOTS = frozenset({
-    (9, 31), (10, 0), (11, 0), (12, 0), (13, 0), (14, 0), (15, 0), (16, 0),
-})
-
 
 def easter(year: int) -> date:
     """Gregorian Easter Sunday (Anonymous/Meeus computus)."""
@@ -104,58 +95,6 @@ def is_trading_day(d: date) -> bool:
     return d not in nyse_holidays(d.year)
 
 
-def early_close_dates(year: int) -> set:
-    """NYSE half-day (1:00 PM ET early close) sessions for ``year``.
-
-    Covers the three standard, rule-stable early closes: the Friday after
-    Thanksgiving, Christmas Eve (Dec 24), and July 3 — but only when each is a
-    real weekday trading day immediately adjacent to the corresponding holiday
-    (so a weekend-shifted Dec 25 / July 4 doesn't spuriously mark a half-day, and
-    a date that is itself the observed holiday is excluded). The hourly SPY alert
-    uses this to suppress 2:00/3:00/4:00 PM slots that would otherwise fire after
-    the 1:00 PM close on these days; the twice-daily screener is unaffected.
-    """
-    hols = nyse_holidays(year)
-    out = set()
-    out.add(_nth_weekday(year, 11, 3, 4) + timedelta(days=1))  # Black Friday
-    dec24 = date(year, 12, 24)
-    if dec24.weekday() < 5 and date(year, 12, 25).weekday() < 5:
-        out.add(dec24)                                          # Christmas Eve
-    jul3 = date(year, 7, 3)
-    if jul3.weekday() < 5 and date(year, 7, 4).weekday() < 5:
-        out.add(jul3)                                          # July 3 (pre-July 4)
-    return {d for d in out if d.weekday() < 5 and d not in hols}
-
-
-def market_close_hm(d: date):
-    """NYSE close time for ``d`` as an ET ``(hour, minute)`` tuple: ``(13, 0)`` on
-    an early-close half day, otherwise the regular ``(16, 0)``."""
-    return (13, 0) if d in early_close_dates(d.year) else (16, 0)
-
-
-def cron_scheduled_et_time(cron_str: str, on_date: date):
-    """ET ``(hour, minute)`` at which a UTC ``'M H * * ...'`` cron is *scheduled* to
-    fire on ``on_date`` — the (hour, minute) generalization of
-    :func:`cron_scheduled_et_hour`.
-
-    Converting the cron's scheduled UTC time to ET via the tz database makes the
-    result DST-correct for ``on_date``, which is what lets the dual EST/EDT crons
-    collapse to one real run: only the cron correct for the current offset maps onto
-    an intended slot. Returns ``None`` if the cron string or tz database can't be
-    resolved.
-    """
-    try:
-        from zoneinfo import ZoneInfo
-        parts = cron_str.split()
-        minute, hour = int(parts[0]), int(parts[1])
-        utc_dt = datetime(on_date.year, on_date.month, on_date.day,
-                          hour, minute, tzinfo=ZoneInfo("UTC"))
-        et = utc_dt.astimezone(ZoneInfo("America/New_York"))
-        return et.hour, et.minute
-    except Exception:
-        return None
-
-
 def cron_scheduled_et_hour(cron_str: str, on_date: date):
     """ET hour at which a UTC ``'M H * * ...'`` cron is *scheduled* to fire.
 
@@ -167,5 +106,12 @@ def cron_scheduled_et_hour(cron_str: str, on_date: date):
     the one that owns today's run (no silent miss). Returns the ET hour as an
     int, or ``None`` if the cron string or tz database can't be resolved.
     """
-    hm = cron_scheduled_et_time(cron_str, on_date)
-    return hm[0] if hm else None
+    try:
+        from zoneinfo import ZoneInfo
+        parts = cron_str.split()
+        minute, hour = int(parts[0]), int(parts[1])
+        utc_dt = datetime(on_date.year, on_date.month, on_date.day,
+                          hour, minute, tzinfo=ZoneInfo("UTC"))
+        return utc_dt.astimezone(ZoneInfo("America/New_York")).hour
+    except Exception:
+        return None
