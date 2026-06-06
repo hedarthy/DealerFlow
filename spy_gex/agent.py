@@ -70,6 +70,14 @@ SKY_GRID = "#1b1f24"      # cell separators / colorbar outline
 SKY_SPOT = "#ffffff"      # spot line + tag
 SKY_CMAP = "viridis"      # min-max normalised (NOT centred at 0), matching Skylit
 SKY_KING = "★"            # marks the largest-magnitude (King) strike
+SKY_POS = "#3fb950"       # positive $ / call-side (green)
+SKY_NEG = "#f85149"       # negative $ / put-side (red)
+SKY_ROW_ALT = "#12161c"   # subtle zebra stripe on the summary table
+SKY_MUTED = "#9aa3ad"     # de-emphasised text (legend)
+
+# Column legend shared by the summary table image and the local report artifact.
+SUMMARY_LEGEND = ("ΣGEX $K per 1% spot   ·   ΣVanna $K per 1.00σ   ·   "
+                  "ΣCharm $K per day   ·   walls = price magnets")
 
 
 def _fmt_k(v, decimals=1):
@@ -252,6 +260,80 @@ def render_grid(mat, spot, title, cbar_label, path, decimals=1):
     plt.close(fig)
 
 
+def _wall_color(s, side_color):
+    """Tint a wall string by side, but leave an ``n/a`` (no wall) muted."""
+    return side_color if isinstance(s, str) and s.startswith("$") else SKY_TEXT
+
+
+def render_summary_table(rows, path):
+    """Render the per-expiry magnet table as a dark Skylit-style PNG card.
+
+    A clean tabular image (header + one row per expiry) so the figures stay
+    aligned instead of wrapping the way a Discord monospace code block does on
+    narrow screens. Regime and the Σ columns are tinted green/red by sign; the
+    call/put walls take the green/red side colours; the column legend sits at the
+    foot. Numbers use a monospace face so digits line up.
+    """
+    # (header, x-anchor in axes fraction, horizontal alignment). The three Σ columns
+    # are spread wide so a 7–8 digit value (e.g. -$1,191,127K next to $12,714,743K)
+    # never collides with its neighbour.
+    cols = [
+        ("Exp",       0.015, "left"),
+        ("DTE",       0.150, "center"),
+        ("Reg",       0.212, "center"),
+        ("Flip",      0.322, "right"),
+        ("Call Wall", 0.442, "right"),
+        ("Put Wall",  0.560, "right"),
+        ("ΣGEX",      0.720, "right"),
+        ("ΣVanna",    0.860, "right"),
+        ("ΣCharm",    0.996, "right"),
+    ]
+    n = max(len(rows), 1)
+    width = 20.0
+    height = 2.0 + 0.62 * n
+    fig, ax = plt.subplots(figsize=(width, height))
+    fig.patch.set_facecolor(SKY_BG)
+    ax.set_facecolor(SKY_BG)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+
+    top, bottom = 0.86, 0.20
+    dy = (top - bottom) / n  # header sits at `top`; each data row steps down by dy
+    head_fs, cell_fs = 16, 15
+
+    for label, x, align in cols:
+        ax.text(x, top, label, color=SKY_TEXT, fontsize=head_fs, fontweight="bold",
+                ha=align, va="center", family="monospace")
+    ax.axhline(top - dy * 0.5, color=SKY_GRID, lw=1.6)
+
+    for i, r in enumerate(rows):
+        y = top - (i + 1) * dy
+        if i % 2 == 1:
+            ax.axhspan(y - dy * 0.5, y + dy * 0.5, color=SKY_ROW_ALT, zorder=0)
+        reg_pos = r["regime"] == "positive"
+        cells = [
+            (r["exp"], SKY_TEXT),
+            (str(r["dte"]), SKY_TEXT),
+            ("+γ" if reg_pos else "-γ", SKY_POS if reg_pos else SKY_NEG),
+            (r["flip_s"], _wall_color(r["flip_s"], SKY_TEXT)),
+            (r["cw_s"], _wall_color(r["cw_s"], SKY_POS)),
+            (r["pw_s"], _wall_color(r["pw_s"], SKY_NEG)),
+            (_fmt_k(r["net_gex"], 0), SKY_POS if r["net_gex"] >= 0 else SKY_NEG),
+            (_fmt_k(r["net_vex"], 0), SKY_POS if r["net_vex"] >= 0 else SKY_NEG),
+            (_fmt_k(r["net_cex"], 0), SKY_POS if r["net_cex"] >= 0 else SKY_NEG),
+        ]
+        for (text, color), (_, x, align) in zip(cells, cols):
+            ax.text(x, y, text, color=color, fontsize=cell_fs, ha=align, va="center",
+                    family="monospace")
+
+    ax.text(0.5, 0.06, SUMMARY_LEGEND, color=SKY_MUTED, fontsize=13,
+            ha="center", va="center", family="monospace", style="italic")
+
+    plt.savefig(path, dpi=200, facecolor=SKY_BG, bbox_inches="tight", pad_inches=0.3)
+    plt.close(fig)
+
+
 # --------------------------------------------------------------------------- text
 
 def _rel(x, spot):
@@ -280,14 +362,28 @@ def magnet_read(spot, keys, regime):
     return " ".join(out)
 
 
-def build_summary(spot, source, slot, et, rows):
-    """Header + per-expiry magnet table. ``rows`` is a list of dicts per expiry."""
+def build_summary_text(spot, source, slot, et, rows):
+    """Markdown header + plain-English magnet read — no table.
+
+    The per-expiry table is rendered as a PNG card (``render_summary_table``) so it
+    can't wrap on narrow Discord clients; this is the accompanying caption.
+    """
     when = f"{slot[0]:02d}:{slot[1]:02d} ET slot" if slot else f"{et:%H:%M} ET (forced)"
     msg = "# 🧲 SPY Dealerflow — Gamma · Vanna · Charm Magnet Map\n"
     msg += f"**{et:%a %b %d %Y} · {when}** · spot **${spot:.2f}** · source `{source}` " \
            f"(data as of {et:%H:%M} ET)\n"
     if rows:
-        msg += magnet_read(spot, rows[0]["keys"], rows[0]["regime"]) + "\n"
+        msg += magnet_read(spot, rows[0]["keys"], rows[0]["regime"])
+    else:
+        msg += "_No usable SPY expirations with open interest right now._"
+    return msg
+
+
+def build_summary(spot, source, slot, et, rows):
+    """Full plain-text summary incl. the fixed-width table — used for the local
+    ``report.md`` artifact (Discord gets the header text + the table PNG instead)."""
+    msg = build_summary_text(spot, source, slot, et, rows)
+    if rows:
         header = (f"{'Exp':<12}{'DTE':>4}{'Reg':>5}{'Flip':>8}{'CallWall':>10}"
                   f"{'PutWall':>9}{'ΣGEX':>15}{'ΣVanna':>15}{'ΣCharm':>15}")
         lines = [header, "-" * len(header)]
@@ -297,11 +393,8 @@ def build_summary(spot, source, slot, et, rows):
                 f"{r['flip_s']:>8}{r['cw_s']:>10}{r['pw_s']:>9}"
                 f"{_fmt_k(r['net_gex'], 0):>15}{_fmt_k(r['net_vex'], 0):>15}"
                 f"{_fmt_k(r['net_cex'], 0):>15}")
-        msg += "```\n" + "\n".join(lines) + "\n```"
-        msg += "_ΣGEX $K per 1% spot · ΣVanna $K per 1.00σ · ΣCharm $K per day · " \
-               "walls = price magnets._"
-    else:
-        msg += "_No usable SPY expirations with open interest right now._"
+        msg += "\n```\n" + "\n".join(lines) + "\n```"
+        msg += "_" + SUMMARY_LEGEND + "._"
     return msg
 
 
@@ -454,15 +547,18 @@ def main(force=False):
         render_grid(mat, spot, f"{name} — {base}", unit, path, decimals=dec)
         images.append((caption, path))
 
-    summary = build_summary(spot, source, slot, et, rows)
-    _post(summary)
+    summary = build_summary_text(spot, source, slot, et, rows)
+    table_png = _art("spy_gex_summary.png")
+    render_summary_table(rows, table_png)
+    _post(summary, table_png)
     time.sleep(1)
     for caption, png in images:
         _post(caption, png)
         time.sleep(1)
 
     with open(_art("spy_gex_report.md"), "w") as f:
-        f.write(summary + "\n\n" + "\n\n".join(c for c, _ in images))
+        report = build_summary(spot, source, slot, et, rows)
+        f.write(report + "\n\n" + "\n\n".join(c for c, _ in images))
     print(f"✅ SPY GEX alert posted — {len(rows)} expiries × 3 greek grids, source {source}")
 
 

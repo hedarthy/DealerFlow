@@ -25,6 +25,7 @@ from spy_gex.calendar_util import (
 )
 from spy_gex.agent import (
     slot_decision, build_greek_matrix, _annot_grid, render_grid, SKY_KING, _fmt_k,
+    render_summary_table, build_summary_text, build_summary,
 )
 
 # Union of EST + EDT UTC crons declared in spy-gex-run.yml.
@@ -214,6 +215,33 @@ def test_render_grid_smoke():
     print("ok  render_grid smoke (mixed/zero/missing + all-NaN)")
 
 
+def test_summary_table_and_text_smoke():
+    import tempfile
+    rows = [
+        {"exp": "2026-06-08", "dte": 2, "regime": "negative",
+         "keys": {"gamma_flip": 0.0, "call_wall": 755.0, "put_wall": 745.0},
+         "flip_s": "n/a", "cw_s": "$755", "pw_s": "$745",
+         "net_gex": -688802.0, "net_vex": -572324.0, "net_cex": -6986.0},
+        {"exp": "2026-06-09", "dte": 3, "regime": "positive",
+         "keys": {"gamma_flip": 738.0, "call_wall": 755.0, "put_wall": 730.0},
+         "flip_s": "$738", "cw_s": "$755", "pw_s": "$730",
+         "net_gex": -298314.0, "net_vex": 876294.0, "net_cex": -24701.0},
+    ]
+    et = datetime(2026, 6, 6, 1, 40)
+    # Header caption carries the title + magnet read but NOT the fixed-width table.
+    text = build_summary_text(100.0, "cboe", None, et, rows)
+    assert "SPY Dealerflow" in text and "```" not in text and "ΣGEX" not in text
+    # The local report artifact still embeds the plain-text table + legend.
+    report = build_summary(100.0, "cboe", None, et, rows)
+    assert "```" in report and "ΣVanna" in report and "per 1.00σ" in report
+    # The table renders to a non-empty PNG (mixed signs, an n/a flip, zebra rows).
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "summary.png")
+        render_summary_table(rows, path)
+        assert os.path.exists(path) and os.path.getsize(path) > 0
+    print("ok  summary table PNG + header/report text")
+
+
 def test_slot_decision():
     # Weekend / holiday -> skip regardless of cron.
     assert slot_decision(datetime(2026, 6, 6, 10, 0), force=False, cron="0 14 * * 1-5")[0] == "skip"
@@ -238,6 +266,7 @@ if __name__ == "__main__":
     test_build_greek_matrix_missing_is_nan()
     test_annot_grid_king_and_blanks()
     test_render_grid_smoke()
+    test_summary_table_and_text_smoke()
     test_spy_hourly_slots_dedupe()
     test_spy_early_close_suppresses_afternoon()
     test_early_close_calendar()
