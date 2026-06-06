@@ -326,14 +326,15 @@ def _wall_color(s, side_color):
     return side_color if isinstance(s, str) and s.startswith("$") else SKY_TEXT
 
 
-def render_summary_table(rows, path):
+def render_summary_table(rows, path, ticker, et, spot, slot):
     """Render the per-expiry magnet table as a dark Skylit-style PNG card.
 
-    A clean tabular image (header + one row per expiry) so the figures stay
+    A clean tabular image (title + header + one row per expiry) so the figures stay
     aligned instead of wrapping the way a Discord monospace code block does on
-    narrow screens. Regime and the Σ columns are tinted green/red by sign; the
-    call/put walls take the green/red side colours; the column legend sits at the
-    foot. Numbers use a monospace face so digits line up.
+    narrow screens. A heading carries the ticker, date and generation time; regime
+    and the Σ columns are tinted green/red by sign; the call/put walls take the
+    green/red side colours; the column legend sits at the foot. Numbers use a
+    monospace face so digits line up.
     """
     # (header, x-anchor in axes fraction, horizontal alignment). The three Σ columns
     # are spread wide so a 7–8 digit value (e.g. -$1,191,127K next to $12,714,743K)
@@ -351,7 +352,7 @@ def render_summary_table(rows, path):
     ]
     n = max(len(rows), 1)
     width = 20.0
-    height = 2.0 + 0.62 * n
+    height = 2.9 + 0.62 * n
     fig, ax = plt.subplots(figsize=(width, height))
     fig.patch.set_facecolor(SKY_BG)
     ax.set_facecolor(SKY_BG)
@@ -359,7 +360,16 @@ def render_summary_table(rows, path):
     ax.set_ylim(0, 1)
     ax.axis("off")
 
-    top, bottom = 0.86, 0.20
+    # Heading: ticker · date · generation time (so the card is self-contained).
+    when = f"{slot[0]:02d}:{slot[1]:02d} ET" if slot else f"{et:%H:%M} ET (forced)"
+    ax.text(0.5, 0.945, f"{ticker} Dealerflow — Gamma · Vanna · Charm Magnet Map",
+            color=SKY_TEXT, fontsize=25, fontweight="bold", ha="center", va="center")
+    ax.text(0.5, 0.873,
+            f"{et:%a %b %d %Y}      ·      generated {when}      ·      spot ${spot:.2f}",
+            color=SKY_MUTED, fontsize=14.5, ha="center", va="center")
+    ax.axhline(0.83, color=SKY_GRID, lw=1.2)
+
+    top, bottom = 0.76, 0.16
     dy = (top - bottom) / n  # header sits at `top`; each data row steps down by dy
     head_fs, cell_fs = 16, 15
 
@@ -627,7 +637,7 @@ def main(force=False):
 
     summary = build_summary_text(spot, source, slot, et, rows)
     table_png = _art("spy_gex_summary.png")
-    render_summary_table(rows, table_png)
+    render_summary_table(rows, table_png, TICKER, et, spot, slot)
     _post(summary, table_png)
     time.sleep(1)
     for caption, png in images:

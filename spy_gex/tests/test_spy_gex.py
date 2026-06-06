@@ -252,10 +252,10 @@ def test_summary_table_and_text_smoke():
     # The local report artifact still embeds the plain-text table + legend.
     report = build_summary(100.0, "cboe", None, et, rows)
     assert "```" in report and "ΣVanna" in report and "per 1.00σ" in report
-    # The table renders to a non-empty PNG (mixed signs, an n/a flip, zebra rows).
+    # The table renders to a non-empty PNG (mixed signs, an n/a flip, zebra rows, title).
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "summary.png")
-        render_summary_table(rows, path)
+        render_summary_table(rows, path, "SPY", et, 737.55, None)
         assert os.path.exists(path) and os.path.getsize(path) > 0
     print("ok  summary table PNG + header/report text")
 
