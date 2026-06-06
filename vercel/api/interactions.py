@@ -18,7 +18,7 @@ Environment variables (set in the Vercel project):
   DISCORD_PUBLIC_KEY   (required) app's public key (portal -> General Information)
   GH_DISPATCH_TOKEN    (required) fine-grained PAT with Actions: read/write on the repo
   GH_OWNER             (optional) repo owner   (default: hedarthy)
-  GH_REPO              (optional) repo name    (default: Options-daytrade-screener)
+  GH_REPO              (optional) repo name    (default: DealerFlow)
   GH_WORKFLOW          (optional) workflow file(default: ticker-gex-run.yml)
   GH_REF               (optional) branch to run on (default: main; must be a branch where
                                   the workflow exists, and the file must also be on the
@@ -83,7 +83,7 @@ def dispatch_workflow(ticker):
     if not token:
         return False, "server missing GH_DISPATCH_TOKEN"
     owner = os.environ.get("GH_OWNER", "hedarthy")
-    repo = os.environ.get("GH_REPO", "Options-daytrade-screener")
+    repo = os.environ.get("GH_REPO", "DealerFlow")
     workflow = os.environ.get("GH_WORKFLOW", "ticker-gex-run.yml")
     ref = os.environ.get("GH_REF", "main")
     url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow}/dispatches"

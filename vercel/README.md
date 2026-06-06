@@ -46,7 +46,7 @@ the always-on gateway bot** — you no longer need to host `ticker_gex/bot.py`.
    | `DISCORD_PUBLIC_KEY` | ✅ | `ab12…` | Discord portal → **General Information** → Public Key |
    | `GH_DISPATCH_TOKEN` | ✅ | `github_pat_…` | The fine-grained PAT from above |
    | `GH_OWNER` | — | `hedarthy` | Repo owner (default already correct) |
-   | `GH_REPO` | — | `Options-daytrade-screener` | Repo name (default already correct) |
+   | `GH_REPO` | — | `DealerFlow` | Repo name (default already correct) |
    | `GH_WORKFLOW` | — | `ticker-gex-run.yml` | Workflow file (default) |
    | `GH_REF` | — | `main` | Branch the workflow runs on |
    | `TICKER_GEX_CHANNEL_ID` | — | `123…` | Restrict `/gex` to one channel |
