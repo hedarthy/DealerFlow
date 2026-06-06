@@ -1,0 +1,66 @@
+name: SPY Dealerflow GEX (hourly)
+on:
+  schedule:
+    # Hourly SPY gamma/vanna/charm heatmap alert: one minute after the open (9:31 ET)
+    # then on the hour through the close (10:00..16:00 ET), Mon-Fri. Each line is a UTC
+    # cron; the agent maps the cron's SCHEDULED ET time to an intended slot (DST-correct)
+    # so the off-season duplicate self-skips — exactly one run per intended slot, year-round.
+    - cron: '31 13 * * 1-5'   # 09:31 ET during EDT (summer)
+    - cron: '31 14 * * 1-5'   # 09:31 ET during EST (winter)
+    - cron: '0 14 * * 1-5'    # 10:00 EDT
+    - cron: '0 15 * * 1-5'    # 11:00 EDT / 10:00 EST
+    - cron: '0 16 * * 1-5'    # 12:00 EDT / 11:00 EST
+    - cron: '0 17 * * 1-5'    # 13:00 EDT / 12:00 EST
+    - cron: '0 18 * * 1-5'    # 14:00 EDT / 13:00 EST
+    - cron: '0 19 * * 1-5'    # 15:00 EDT / 14:00 EST
+    - cron: '0 20 * * 1-5'    # 16:00 EDT / 15:00 EST
+    - cron: '0 21 * * 1-5'    # 16:00 ET during EST (winter)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Bypass the trading-day / schedule-slot gate (run now regardless)'
+        type: boolean
+        default: true
+
+# One SPY alert at a time: if a slot is still posting when the next fires, queue it
+# rather than overlapping Discord posts.
+concurrency:
+  group: spy-gex-run
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run SPY GEX alert
+        run: python -m spy_gex.agent ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
+        env:
+          # Dedicated SPY channel. Prefer SPY_BOY_DISCORD_WEBHOOK, then the older
+          # SPY_GEX_DISCORD_WEBHOOK_URL, finally fall back to the screener webhook.
+          DISCORD_WEBHOOK_URL: ${{ secrets.SPY_BOY_DISCORD_WEBHOOK || secrets.SPY_GEX_DISCORD_WEBHOOK_URL || secrets.OPTIONS_DISCORD_WEBHOOK_URL }}
+          SCHEDULED_CRON: ${{ github.event.schedule }}
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spy-gex-report
+          path: |
+            spy_gex/spy_gex_report.md
+            spy_gex/spy_gex_*.png
+          if-no-files-found: ignore
+      - name: Notify Discord on failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.SPY_BOY_DISCORD_WEBHOOK || secrets.SPY_GEX_DISCORD_WEBHOOK_URL || secrets.OPTIONS_DISCORD_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sf -H "Content-Type: application/json" -X POST \
+            -d "{\"content\": \"❌ SPY dealerflow GEX run failed — see $RUN_URL\"}" \
+            "$DISCORD_WEBHOOK_URL" || true
