@@ -1,4 +1,4 @@
-# Options Day-Trade Screener
+# Dealer Flow
 
 Free, deterministic options day-trade screener. Runs twice daily via GitHub Actions,
 producing up to 2 high-conviction trade ideas plus an additional-candidates table,
