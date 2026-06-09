@@ -209,7 +209,7 @@ def test_aggregate_conviction():
     assert (aligned, opposed) == (4, 0)
     # Negative-gamma weighting up-weights EMA (1.2) + flow (1.1), cuts structure (0.5).
     conv_n, _, _ = aggregate_conviction(12.0, 10.0, 8.0, 8.0, "negative")
-    assert abs(conv_n - (1.2 * 12 + 0.5 * 10 + 1.0 * 8 + 1.1 * 8)) < 1e-9
+    assert abs(conv_n - (1.2 * 12 + 0.8 * 10 + 1.0 * 8 + 1.1 * 8)) < 1e-9
     # adaptive=False is a plain unweighted sum.
     assert abs(aggregate_conviction(12.0, 10.0, 8.0, 8.0, "positive", adaptive=False)[0] - 38.0) < 1e-9
     # Alignment counts use the unweighted signs; an unknown regime falls back to negative.

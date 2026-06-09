@@ -41,12 +41,17 @@ def test_gex_directional():
     # Put above the flip -> fighting support -> oppose.
     assert _pts("put", 100.0, FLIP, CW, PW, "positive", em_pct=EM) < 0
 
-    # Negative-gamma book -> abstain (defer to momentum), regardless of side/location.
-    assert _pts("call", 100.0, FLIP, CW, PW, "negative", em_pct=EM) == 0.0
-    assert _pts("put", 95.0, FLIP, CW, PW, "negative", em_pct=EM) == 0.0
+    # Negative-gamma (trending) book: momentum CONTINUATION around the flip pivot —
+    # confirm the trend-aligned side, oppose the counter-trend side.
+    assert _pts("call", 100.0, FLIP, CW, PW, "negative", em_pct=EM) > 0   # up-trend -> calls
+    assert _pts("put", 95.0, FLIP, CW, PW, "negative", em_pct=EM) > 0     # down-trend -> puts
+    assert _pts("call", 95.0, FLIP, CW, PW, "negative", em_pct=EM) < 0    # call into down-trend
+    assert _pts("put", 100.0, FLIP, CW, PW, "negative", em_pct=EM) < 0    # put into up-trend
+    # Right at the flip (inside the dead-zone) -> neutral, no side picked mid-chop.
+    assert _pts("call", FLIP, FLIP, CW, PW, "negative", em_pct=EM) == 0.0
     # No structure (flip unknown) -> neutral.
     assert _pts("call", 100.0, 0.0, CW, PW, "positive", em_pct=EM) == 0.0
-    print("ok  gex_directional_adjustment")
+    print("ok  gex_directional_adjustment (pos-γ mean-revert + neg-γ momentum continuation)")
 
 
 def test_price_action():

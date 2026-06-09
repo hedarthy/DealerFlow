@@ -34,8 +34,12 @@ def score_components(row, spot, dte=1, gex_balance=0.0, em_pct=0.0,
     # Liquidity: continuous in log-OI (0 at OI=100, 50 at 1k, 100 at 10k+).
     squeeze = _clamp((math.log10(max(oi, 1.0)) - 2.0) / 2.0 * 100.0)
 
-    # Regime: scale-free net dealer gamma balance in [-1,1] -> ~[7,93], 50 at neutral.
-    gex_score = 50.0 + 50.0 * math.tanh(2.0 * gex_balance)
+    # Regime CONVICTION: a clearly one-sided dealer-gamma book is high-information in
+    # EITHER direction — a strong positive-γ pin book and a strong negative-γ trend book
+    # both trade well, while a muddy near-neutral book does not. Score the *magnitude* of
+    # the net balance (50 at neutral -> ~98 at fully one-sided) so negative-γ (put /
+    # breakdown) setups aren't structurally handicapped versus positive-γ ones.
+    gex_score = 50.0 + 50.0 * math.tanh(2.0 * abs(gex_balance))
 
     # Dealer vanna/charm concentration at this strike vs the chain's largest net strike.
     v = abs(vanna_ex) / max_vex if max_vex else 0.0
@@ -142,17 +146,25 @@ def gex_directional_adjustment(opt_type, spot, gamma_flip, call_wall, put_wall, 
     This overlay supplies the missing read from the GEX *structure*, but only where
     that structure is actually reliable.
 
-    We assert an edge **only in a positive-gamma (mean-reverting) book**, where the
-    gamma flip is genuine support and the walls are genuine magnets: a call is
-    confirmed when spot sits above the flip with real room up to the call wall, a put
-    when spot sits below the flip with room down to the put wall. Chasing past a wall
-    (move already made, dealers selling/buying into it) or clearly fighting the flip is
-    penalised; sitting *at* a wall or inside a dead-zone around the flip is neutral so
-    momentum/EMA decides (a flip reclaim is a long, not a short). In a negative-gamma
-    (trending) book the walls are weak and price accelerates, so we abstain (0) and
-    defer entirely to the price-action overlay — never fading a breakout. The flip
-    dead-zone and wall-room bands scale with the expected move so volatile names need
-    proportionally more room before a fresh entry is confirmed.
+    We read the GEX *structure* directionally, with the read appropriate to the regime.
+
+    In a **positive-gamma (mean-reverting)** book the gamma flip is genuine support and the
+    walls are genuine magnets: a call is confirmed when spot sits above the flip with real
+    room up to the call wall, a put when spot sits below the flip with room down to the put
+    wall. Chasing past a wall (move already made, dealers selling/buying into it) or clearly
+    fighting the flip is penalised; sitting *at* a wall or inside a dead-zone around the flip
+    is neutral so momentum/EMA decides (a flip reclaim is a long, not a short).
+
+    In a **negative-gamma (trending)** book dealers chase price, so we trade WITH the push
+    around the flip pivot instead of abstaining: above the flip is an up-trend (confirm
+    calls, oppose puts), below the flip is a down-trend (confirm puts, oppose calls). Here
+    breaking a wall *accelerates* rather than caps, so the walls don't veto the read; only a
+    flip dead-zone stays neutral so we don't pick a side mid-chop. This is momentum
+    CONTINUATION — never a fade of a breakout — and it gives put/breakdown setups the same
+    structural confirmation calls already get.
+
+    The flip dead-zone and wall-room bands scale with the expected move so volatile names
+    need proportionally more room before a fresh entry is confirmed.
 
     Returns ``(points, label)``: > 0 confirms, < 0 opposes, 0 is neutral.
     """
@@ -160,32 +172,46 @@ def gex_directional_adjustment(opt_type, spot, gamma_flip, call_wall, put_wall, 
     cw, pw = _num(call_wall), _num(put_wall)
     if s <= 0 or flip <= 0:
         return 0.0, "n/a"
-    if regime != "positive":
-        return 0.0, "neg-γ: momentum-led (neutral)"
     em = max(0.0, _num(em_pct)) / 100.0
     flip_band = max(0.0025, 0.30 * em)   # ± dead-zone around the flip (reclaim zone)
     wall_room = max(0.0040, 0.40 * em)   # min room to a wall to still be a fresh entry
     tol = 0.001
     is_call = str(opt_type).lower().startswith("c")
-    if is_call:
-        if cw > 0 and s > cw * (1 + tol):
-            return -oppose_penalty, "spot above call wall — upside capped ✗"
-        if cw > 0 and s >= cw * (1 - wall_room):
-            return 0.0, "at call wall — limited upside"
-        if s > flip * (1 + flip_band) and (cw <= 0 or s < cw * (1 - wall_room)):
-            return align_bonus, "above γ-flip, room to call wall ✓"
-        if s < flip * (1 - flip_band):
-            return -oppose_penalty, "below γ-flip support ✗"
+    if regime == "positive":
+        if is_call:
+            if cw > 0 and s > cw * (1 + tol):
+                return -oppose_penalty, "spot above call wall — upside capped ✗"
+            if cw > 0 and s >= cw * (1 - wall_room):
+                return 0.0, "at call wall — limited upside"
+            if s > flip * (1 + flip_band) and (cw <= 0 or s < cw * (1 - wall_room)):
+                return align_bonus, "above γ-flip, room to call wall ✓"
+            if s < flip * (1 - flip_band):
+                return -oppose_penalty, "below γ-flip support ✗"
+            return 0.0, "near γ-flip — momentum decides"
+        if pw > 0 and s < pw * (1 - tol):
+            return -oppose_penalty, "spot below put wall — downside capped ✗"
+        if pw > 0 and s <= pw * (1 + wall_room):
+            return 0.0, "at put wall — limited downside"
+        if pw > 0 and s < flip * (1 - flip_band) and s > pw * (1 + wall_room):
+            return align_bonus, "below γ-flip, room to put wall ✓"
+        if s > flip * (1 + flip_band):
+            return -oppose_penalty, "above γ-flip ✗"
         return 0.0, "near γ-flip — momentum decides"
-    if pw > 0 and s < pw * (1 - tol):
-        return -oppose_penalty, "spot below put wall — downside capped ✗"
-    if pw > 0 and s <= pw * (1 + wall_room):
-        return 0.0, "at put wall — limited downside"
-    if pw > 0 and s < flip * (1 - flip_band) and s > pw * (1 + wall_room):
-        return align_bonus, "below γ-flip, room to put wall ✓"
-    if s > flip * (1 + flip_band):
-        return -oppose_penalty, "above γ-flip ✗"
-    return 0.0, "near γ-flip — momentum decides"
+    if regime == "negative":
+        up = s > flip * (1 + flip_band)
+        down = s < flip * (1 - flip_band)
+        if is_call:
+            if up:
+                return align_bonus, "neg-γ up-trend above flip ✓"
+            if down:
+                return -oppose_penalty, "neg-γ down-trend below flip ✗"
+            return 0.0, "near γ-flip — momentum decides"
+        if down:
+            return align_bonus, "neg-γ down-trend below flip ✓"
+        if up:
+            return -oppose_penalty, "neg-γ up-trend above flip ✗"
+        return 0.0, "near γ-flip — momentum decides"
+    return 0.0, "n/a"
 
 
 def vanna_directional_adjustment(opt_type, net_vex, gross_vex,
@@ -253,7 +279,7 @@ def flow_imbalance_adjustment(opt_type, call_prem, put_prem,
 # structure read is cut. Tunable from config (``conviction_regime_weights``).
 DEFAULT_REGIME_WEIGHTS = {
     "positive": {"ema": 0.7, "gex": 1.2, "vanna": 1.0, "flow": 0.9},
-    "negative": {"ema": 1.2, "gex": 0.5, "vanna": 1.0, "flow": 1.1},
+    "negative": {"ema": 1.2, "gex": 0.8, "vanna": 1.0, "flow": 1.1},
 }
 
 

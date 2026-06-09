@@ -64,23 +64,28 @@ means dealer selling.
 ### Scoring
 
 Each contract gets a 0–100 composite from five **continuous** components — GEX regime
-(`tanh` of the net dealer-gamma balance), order-flow (smooth vol/OI saturation), liquidity
-(log-OI), vanna/charm concentration at the strike, and expected-move-scaled moneyness — so
-liquid names spread across the range instead of piling onto one plateau. The dominant
-weighted component is surfaced as the pick's **Edge**.
+**conviction** (`tanh` of the *magnitude* of the net dealer-gamma balance, so a strongly
+one-sided book scores high whether it's positive-γ *or* negative-γ — a muddy neutral book
+is the low-information case), order-flow (smooth vol/OI saturation), liquidity (log-OI),
+vanna/charm concentration at the strike, and expected-move-scaled moneyness — so liquid
+names spread across the range instead of piling onto one plateau. The dominant weighted
+component is surfaced as the pick's **Edge**.
 
 **Four directional dealer-flow overlays** sit on top of that (otherwise side-symmetric)
 base score, because gamma/vanna/charm magnitudes are nearly identical for a call and a put
 on the same strike — without a directional read the call-vs-put choice is barely better
 than a coin flip. Each returns signed points (+ confirms the side, − opposes it, 0 neutral):
 
-- **Dealer structure (GEX).** In a *positive-gamma* (mean-reverting) book the gamma flip is
-  real support and the walls are real magnets, so a call sitting above the flip with room
-  up to the call wall is confirmed (and a put below the flip with room to the put wall);
-  chasing *past* a wall or fighting the flip is penalised; sitting *at* a wall or in the
-  flip's reclaim zone is neutral. In a *negative-gamma* (trending) book the walls are weak,
-  so this overlay abstains and defers to momentum — it never fades a breakout. Bands scale
-  with the expected move. Toggle via `enable_gex_directional_filter`.
+- **Dealer structure (GEX).** The structural read adapts to the regime. In a *positive-gamma*
+  (mean-reverting) book the gamma flip is real support and the walls are real magnets, so a
+  call sitting above the flip with room up to the call wall is confirmed (and a put below the
+  flip with room to the put wall); chasing *past* a wall or fighting the flip is penalised;
+  sitting *at* a wall or in the flip's reclaim zone is neutral. In a *negative-gamma*
+  (trending) book dealers chase price, so we trade momentum **continuation** around the flip
+  pivot — above the flip confirms calls and opposes puts, below the flip confirms puts and
+  opposes calls (breaking a wall accelerates rather than caps, so walls don't veto). This
+  never fades a breakout, and it gives put/breakdown setups the same structural confirmation
+  calls get. Bands scale with the expected move. Toggle via `enable_gex_directional_filter`.
 - **Net vanna sign.** The *direction* of the dealer hedge already printed as the vanna
   regime, now actually scored: positive net dealer vanna means an IV drop forces dealer
   **buying** (a tailwind for calls), negative net favours puts. Scaled by how lopsided the
@@ -94,9 +99,12 @@ than a coin flip. Each returns signed points (+ confirms the side, − opposes i
 These four are combined into a single **regime-adaptive conviction** score: in a
 positive-γ (pinning) book the screen leans on dealer **structure** and flow and
 down-weights momentum; in a negative-γ (trending) book it leans on **momentum** and flow
-and cuts the (unreliable) structure read. The per-regime weights are tunable via
+while the structure read switches to momentum continuation (slightly down-weighted to
+avoid double-counting the EMA trend). The per-regime weights are tunable via
 `conviction_regime_weights` / `regime_adaptive_weights`. The contract is ranked on
-`base + conviction`.
+`base + conviction`. Both **calls and puts** are first-class: negative net vanna confirms
+puts just as positive net vanna confirms calls, and the negative-γ structure read confirms
+breakdowns just as positive-γ confirms breakouts.
 
 A pick reaches **high conviction** only if it clears the score cutoff, is **reachable**
 (near enough the money for its expected move — `min_moneyness_high_conv`, which keeps
