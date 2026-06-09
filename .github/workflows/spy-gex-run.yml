@@ -1,12 +1,12 @@
 name: SPY Dealerflow GEX (hourly)
 on:
   schedule:
-    # Hourly SPY gamma/vanna/charm heatmap alert: one minute after the open (9:31 ET)
+    # Hourly SPY gamma/vanna/charm heatmap alert: at the open (09:30 ET = 6:30 AM PT)
     # then on the hour through the close (10:00..16:00 ET), Mon-Fri. Each line is a UTC
     # cron; the agent maps the cron's SCHEDULED ET time to an intended slot (DST-correct)
     # so the off-season duplicate self-skips — exactly one run per intended slot, year-round.
-    - cron: '31 13 * * 1-5'   # 09:31 ET during EDT (summer)
-    - cron: '31 14 * * 1-5'   # 09:31 ET during EST (winter)
+    - cron: '30 13 * * 1-5'   # 09:30 ET during EDT (summer) = 6:30 AM PT
+    - cron: '30 14 * * 1-5'   # 09:30 ET during EST (winter) = 6:30 AM PT
     - cron: '0 14 * * 1-5'    # 10:00 EDT
     - cron: '0 15 * * 1-5'    # 11:00 EDT / 10:00 EST
     - cron: '0 16 * * 1-5'    # 12:00 EDT / 11:00 EST

@@ -14,13 +14,13 @@ try:
 except Exception:  # pragma: no cover - missing tzdata; degrade to naive local time
     _ET = None
 
-# Intended ET (hour, minute) slots for the hourly SPY dealerflow alert: one minute
-# after the open, then on the hour through the close. The dual EST/EDT UTC crons in
-# spy-gex-run.yml each map to exactly ONE ET time per date (DST-correct), and the
-# agent runs only when that scheduled ET time lands on one of these slots — so the
-# off-DST cron self-skips and there is no double-post (see cron_scheduled_et_time).
+# Intended ET (hour, minute) slots for the hourly SPY dealerflow alert: at the open,
+# then on the hour through the close. The dual EST/EDT UTC crons in spy-gex-run.yml
+# each map to exactly ONE ET time per date (DST-correct), and the agent runs only when
+# that scheduled ET time lands on one of these slots — so the off-DST cron self-skips
+# and there is no double-post (see cron_scheduled_et_time). 09:30 ET = 6:30 AM Pacific.
 SPY_GEX_SLOTS = frozenset({
-    (9, 31), (10, 0), (11, 0), (12, 0), (13, 0), (14, 0), (15, 0), (16, 0),
+    (9, 30), (10, 0), (11, 0), (12, 0), (13, 0), (14, 0), (15, 0), (16, 0),
 })
 
 

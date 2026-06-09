@@ -30,7 +30,7 @@ from spy_gex.agent import (
 
 # Union of EST + EDT UTC crons declared in spy-gex-run.yml.
 SPY_CRONS = [
-    "31 13 * * 1-5", "31 14 * * 1-5",
+    "30 13 * * 1-5", "30 14 * * 1-5",
     "0 14 * * 1-5", "0 15 * * 1-5", "0 16 * * 1-5", "0 17 * * 1-5",
     "0 18 * * 1-5", "0 19 * * 1-5", "0 20 * * 1-5", "0 21 * * 1-5",
 ]
@@ -137,7 +137,7 @@ def test_spy_early_close_suppresses_afternoon():
         assert market_close_hm(half) == (13, 0)
         slots = _spy_open_slots(half)
         assert (14, 0) not in slots and (15, 0) not in slots and (16, 0) not in slots
-        assert sorted(slots) == [(9, 31), (10, 0), (11, 0), (12, 0), (13, 0)], slots
+        assert sorted(slots) == [(9, 30), (10, 0), (11, 0), (12, 0), (13, 0)], slots
     assert market_close_hm(date(2026, 6, 5)) == (16, 0)
     assert len(_spy_open_slots(date(2026, 6, 5))) == 8
     print("ok  SPY early-close days suppress post-13:00 slots")
@@ -268,9 +268,9 @@ def test_slot_decision():
     # A valid EDT cron on a normal session maps to its intended slot and runs.
     action, slot = slot_decision(datetime(2026, 6, 5, 10, 0), force=False, cron="0 14 * * 1-5")
     assert action == "run" and slot == (10, 0)
-    # The winter-morning cron self-skips on a summer date (14:31 UTC -> 10:31 EDT, not a
+    # The winter-morning cron self-skips on a summer date (14:30 UTC -> 10:30 EDT, not a
     # slot), so the dual EST/EDT crons never double-post.
-    assert slot_decision(datetime(2026, 6, 5, 10, 31), force=False, cron="31 14 * * 1-5")[0] == "skip"
+    assert slot_decision(datetime(2026, 6, 5, 10, 30), force=False, cron="30 14 * * 1-5")[0] == "skip"
     print("ok  slot_decision")
 
 

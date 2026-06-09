@@ -74,7 +74,7 @@ def _gate_open(mode, cron_str, on_date):
 # The actual cron strings shipped in the workflows.
 CRONS = {
     "morning": ["25 13 * * 1-5", "25 14 * * 1-5"],
-    "close": ["5 20 * * 1-5", "5 21 * * 1-5"],
+    "close": ["0 20 * * 1-5", "0 21 * * 1-5"],
 }
 
 
@@ -95,7 +95,7 @@ def test_dual_cron_collapses_to_one_run():
 def test_latency_does_not_double_post_or_miss():
     # The gate keys off the cron's SCHEDULED hour, so scheduler latency on the
     # actual start time cannot change the decision: in winter the early "EDT"
-    # cron (scheduled 08:10 / 15:05 ET) self-skips even if delayed into the
+    # cron (scheduled 08:25 / 15:00 ET) self-skips even if delayed into the
     # intended hour, and the correct cron still owns the run even if it starts
     # late. Verify exactly one cron is eligible per season regardless of delay.
     winter = date(2026, 1, 15)
@@ -105,8 +105,8 @@ def test_latency_does_not_double_post_or_miss():
     assert not _gate_open("morning", "25 13 * * 1-5", winter)   # delayed off-season -> still skip
     assert _gate_open("morning", "25 14 * * 1-5", winter)       # correct cron -> run
     # Close: EDT cron scheduled 15 ET (skip), EST cron scheduled 16 ET (run).
-    assert cron_scheduled_et_hour("5 20 * * 1-5", winter) == 15
-    assert cron_scheduled_et_hour("5 21 * * 1-5", winter) == 16
+    assert cron_scheduled_et_hour("0 20 * * 1-5", winter) == 15
+    assert cron_scheduled_et_hour("0 21 * * 1-5", winter) == 16
     summer = date(2026, 7, 15)
     # Summer flips which cron is correct.
     assert cron_scheduled_et_hour("25 13 * * 1-5", summer) == 9

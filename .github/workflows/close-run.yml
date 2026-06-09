@@ -1,8 +1,11 @@
-name: Close Run (4:05 PM ET)
+name: Close Run (4:00 PM ET / 1:00 PM PT)
 on:
   schedule:
-    - cron: '5 20 * * 1-5'    # 16:05 ET during EDT (summer)
-    - cron: '5 21 * * 1-5'    # 16:05 ET during EST (winter)
+    # 16:00 ET = market close = 1:00 PM Pacific. Dual UTC crons (one per DST offset);
+    # the close gate keys off the cron's scheduled ET hour (16), so the off-season
+    # duplicate self-skips and exactly one run fires at the close year-round.
+    - cron: '0 20 * * 1-5'    # 16:00 ET during EDT (summer) = 1:00 PM PT
+    - cron: '0 21 * * 1-5'    # 16:00 ET during EST (winter) = 1:00 PM PT
   workflow_dispatch:
     inputs:
       force:
