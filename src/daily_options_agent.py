@@ -18,7 +18,7 @@ from src.cboe_source import fetch_cboe
 from src.timeutil import eastern_now
 from src.market_calendar import is_trading_day, cron_scheduled_et_hour, INTENDED_ET_HOUR
 from src.event_calendar import ticker_event_dates, event_in_window
-from src.heatmap import render_pick_triptych
+from src.heatmap import render_pick_triptych, render_candidates_table
 
 # Resolve all relative paths (config.json, report.md, artifacts, .env) from repo root,
 # so the agent behaves identically regardless of the caller's working directory.
@@ -177,6 +177,25 @@ def build_pick_message(rank, contract, keys, regime, mode, date):
             f"~${contract['premium_est'] / 1000:.1f}M prem · {contract.get('source', 'yfinance')} · "
             f"Σvanna {contract.get('total_vex_m', 0.0):.1f}M/1.00σ · "
             f"Σcharm {contract.get('total_cex_m', 0.0):.1f}M/day_")
+    return msg
+
+
+def build_table_caption(lower_conv, mode, date):
+    """Short markdown caption that accompanies the additional-candidates PNG card.
+
+    The table itself is rendered as an image (``render_candidates_table``) because a
+    wide monospace code block wraps and becomes unreadable on mobile Discord. This is
+    just the heading + the event-risk explainer.
+    """
+    msg = f"# 📊 Additional Candidates — {mode.upper()} {date}\n"
+    if not lower_conv:
+        return msg + "\n_No additional candidates today._"
+    msg += (f"_{len(lower_conv)} setup{'s' if len(lower_conv) != 1 else ''} just below "
+            f"the high-conviction bar, ranked by score (table below)._")
+    if any(c.get("event_risk") for c, *_ in lower_conv):
+        msg += ("\n⚠️ **event-risk** names have a known catalyst (earnings / keynote / etc.) "
+                "on or before expiry — dealer-gamma pinning breaks down across binary events, "
+                "so they are excluded from high conviction. Trade only with an event thesis.")
     return msg
 
 
@@ -502,11 +521,26 @@ def main(mode: str, force: bool = False):
         send_discord(none_msg)
         time.sleep(1)
 
-    # Message 3: additional-candidates table (ticker / type / strike / dte / score /
-    # vol-OI / edge) — one row per remaining ticker, ranked by score.
-    table_msg = build_table_message(lower_conv, mode, date)
-    sections.append(table_msg)
-    send_discord(table_msg)
+    # Message 3: additional-candidates table. Rendered as a PNG card because wide
+    # monospace code blocks wrap and become unreadable on mobile Discord; the full
+    # plain-text table is still written to the local report.md artifact below. If the
+    # render fails for any reason, degrade to posting the text table so the alert
+    # never silently drops.
+    table_caption = build_table_caption(lower_conv, mode, date)
+    table_full = build_table_message(lower_conv, mode, date)
+    sections.append(table_full)
+    table_png = None
+    if lower_conv:
+        table_png = "candidates_table.png"
+        try:
+            render_candidates_table(lower_conv, mode, date, table_png)
+        except Exception as e:
+            print(f"⚠️  candidates table render failed: {e} — posting text only")
+            table_png = None
+    if table_png:
+        send_discord(table_caption, table_png)
+    else:
+        send_discord(table_full)
 
     with open("report.md", "w") as f:
         f.write("\n\n".join(sections))

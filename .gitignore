@@ -11,6 +11,7 @@ venv/
 # Generated artifacts
 report.md
 gex_heatmap*.png
+candidates_table.png
 previous_close.json
 reports/*
 !reports/.gitkeep

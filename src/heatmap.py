@@ -30,6 +30,10 @@ SKY_SPOT = "#ffffff"
 SKY_CMAP = "viridis"
 SKY_KING = "★"
 SKY_PICK = "#f2c744"   # gold outline + tag marking the traded strike
+SKY_POS = "#3fb950"    # call side / positive (green)
+SKY_NEG = "#f85149"    # put side / negative (red)
+SKY_ROW_ALT = "#12161c"  # subtle zebra stripe on table cards
+SKY_MUTED = "#9aa3ad"  # de-emphasised text (legends / captions)
 
 # One expiry, three greeks: (grid key, panel title, colorbar unit, decimals).
 TRIPTYCH_PANELS = [
@@ -209,4 +213,93 @@ def render_pick_triptych(contract, gex_grid, vex_grid, cex_grid, path):
              f"·  dealer GEX / VEX / CEX")
     fig.suptitle(title, color=SKY_TEXT, fontsize=17, fontweight="bold")
     plt.savefig(path, dpi=200, facecolor=SKY_BG, bbox_inches="tight", pad_inches=0.35)
+    plt.close(fig)
+
+
+# Column layout for the additional-candidates card: (header, x-anchor in axes
+# fraction, horizontal alignment). Edge is left-anchored last with the widest run
+# so a tag like "earnings-risk" never collides with Vol/OI.
+CANDIDATE_COLS = [
+    ("Ticker", 0.015, "left"),
+    ("C/P",    0.165, "center"),
+    ("Strike", 0.320, "right"),
+    ("OTM%",   0.430, "right"),
+    ("DTE",    0.510, "center"),
+    ("Score",  0.625, "right"),
+    ("Vol/OI", 0.745, "right"),
+    ("Edge",   0.790, "left"),
+]
+
+CANDIDATE_LEGEND = ("Score = composite dealer-flow conviction (0-100)   ·   "
+                    "Vol/OI = day volume / open interest   ·   Edge = dominant signal")
+
+
+def render_candidates_table(lower_conv, mode, date, path):
+    """Render the additional-candidates list as a dark Skylit-style PNG card.
+
+    Discord mangles wide monospace code blocks on narrow / mobile clients (columns
+    wrap and the table becomes unreadable). A rendered image keeps every column
+    aligned at any width. Calls are tinted green, puts red; event-risk names show a
+    gold ``<label>-risk`` edge (they are excluded from high conviction). One row per
+    candidate, in the order supplied (already ranked by score upstream).
+    """
+    rows = list(lower_conv)
+    n = max(len(rows), 1)
+    width = 18.0
+    height = 2.7 + 0.62 * n
+    fig, ax = plt.subplots(figsize=(width, height))
+    fig.patch.set_facecolor(SKY_BG)
+    ax.set_facecolor(SKY_BG)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+
+    ax.text(0.5, 0.945, f"Additional Candidates — {mode.upper()} {date}",
+            color=SKY_TEXT, fontsize=25, fontweight="bold", ha="center", va="center")
+    ax.text(0.5, 0.873,
+            f"{len(rows)} setup{'s' if len(rows) != 1 else ''} just below the "
+            f"high-conviction bar  ·  ranked by score",
+            color=SKY_MUTED, fontsize=14.5, ha="center", va="center")
+    ax.axhline(0.83, color=SKY_GRID, lw=1.2)
+
+    top, bottom = 0.76, 0.16
+    dy = (top - bottom) / n  # header at `top`; each data row steps down by dy
+    head_fs, cell_fs = 16, 15
+
+    for label, x, align in CANDIDATE_COLS:
+        ax.text(x, top, label, color=SKY_TEXT, fontsize=head_fs, fontweight="bold",
+                ha=align, va="center", family="monospace")
+    ax.axhline(top - dy * 0.5, color=SKY_GRID, lw=1.6)
+
+    for i, item in enumerate(rows):
+        contract = item[0] if isinstance(item, (tuple, list)) else item
+        y = top - (i + 1) * dy
+        if i % 2 == 1:
+            ax.axhspan(y - dy * 0.5, y + dy * 0.5, color=SKY_ROW_ALT, zorder=0)
+        is_call = contract.get("type") == "call"
+        if contract.get("event_risk"):
+            lbl = contract.get("event_label") or "event"
+            edge_text, edge_color = f"{lbl}-risk", SKY_PICK
+        else:
+            edge_text, edge_color = contract.get("edge", ""), SKY_MUTED
+        if len(edge_text) > 28:  # keep the Edge cell from running off the card
+            edge_text = edge_text[:27] + "…"
+        cells = [
+            (str(contract.get("ticker", "")), SKY_TEXT),
+            ("C" if is_call else "P", SKY_POS if is_call else SKY_NEG),
+            (f"{contract.get('strike', 0.0):.2f}", SKY_TEXT),
+            (f"{contract.get('otm', 0.0):.1f}", SKY_TEXT),
+            (str(contract.get("dte", "?")), SKY_TEXT),
+            (f"{contract.get('score', 0.0):.1f}", SKY_TEXT),
+            (f"{contract.get('vol_oi', 0.0):.1f}", SKY_TEXT),
+            (edge_text, edge_color),
+        ]
+        for (text, color), (_, x, align) in zip(cells, CANDIDATE_COLS):
+            ax.text(x, y, text, color=color, fontsize=cell_fs, ha=align, va="center",
+                    family="monospace")
+
+    ax.text(0.5, 0.06, CANDIDATE_LEGEND, color=SKY_MUTED, fontsize=13,
+            ha="center", va="center", family="monospace", style="italic")
+
+    plt.savefig(path, dpi=200, facecolor=SKY_BG, bbox_inches="tight", pad_inches=0.3)
     plt.close(fig)
