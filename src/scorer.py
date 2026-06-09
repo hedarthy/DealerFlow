@@ -164,6 +164,101 @@ def gex_directional_adjustment(opt_type, spot, gamma_flip, call_wall, put_wall, 
     return 0.0, "near γ-flip — momentum decides"
 
 
+def vanna_directional_adjustment(opt_type, net_vex, gross_vex,
+                                 align_bonus=8.0, oppose_penalty=8.0, min_frac=0.05):
+    """Fold the SIGN of net dealer vanna into a directional read, as additive points.
+
+    VEX = ∂(dealer delta)/∂σ with dealer sign calls +1 / puts −1. A POSITIVE net vanna
+    means that when implied vol falls — the base case into a calm tape and a 0–2 DTE
+    expiry — dealers must BUY the underlying (price support, a tailwind for calls); a
+    NEGATIVE net is a tailwind for puts. This is the directional content of the
+    ``vanna_regime`` the report already prints, now actually scored. The strength scales
+    with how lopsided the book is (``|net| / gross``) so a balanced chain contributes
+    nothing. It stays a modest overlay (not a core weight) because the sign of the hedge
+    flips if IV *rises* instead — we don't predict IV direction.
+
+    Returns ``(points, label)``: > 0 confirms, < 0 opposes, 0 neutral.
+    """
+    g = _num(gross_vex)
+    if g <= 0:
+        return 0.0, "vanna n/a"
+    bal = _num(net_vex) / g  # net dealer vanna balance in [-1, 1]
+    if abs(bal) < min_frac:
+        return 0.0, "vanna balanced"
+    is_call = str(opt_type).lower().startswith("c")
+    strength = min(1.0, abs(bal))
+    aligned = (bal > 0) == is_call  # +net vanna favors calls, −net favors puts
+    sign_txt = "+net vanna" if bal > 0 else "−net vanna"
+    if aligned:
+        return align_bonus * strength, f"vanna tailwind ({sign_txt}) ✓"
+    return -oppose_penalty * strength, f"vanna headwind ({sign_txt}) ✗"
+
+
+def flow_imbalance_adjustment(opt_type, call_prem, put_prem,
+                              align_bonus=8.0, oppose_penalty=8.0, min_frac=0.10):
+    """Signed order-flow lean from the day's traded *premium* (vol × price), call vs put.
+
+    A deliberately crude aggressor proxy: with no time-and-sales we can't separate buys
+    from sells, but a heavy skew of the session's option $-premium into calls (or puts)
+    is a bullish (bearish) lean. ``imbalance = (callP − putP)/(callP + putP)`` in
+    [−1, 1]; under ``min_frac`` the tape is two-sided and ignored. Points scale with
+    ``|imbalance|`` so a one-sided tape counts more than a marginal skew.
+
+    Returns ``(points, label)``: > 0 confirms, < 0 opposes, 0 neutral.
+    """
+    cp, pp = max(0.0, _num(call_prem)), max(0.0, _num(put_prem))
+    tot = cp + pp
+    if tot <= 0:
+        return 0.0, "flow n/a"
+    imb = (cp - pp) / tot
+    if abs(imb) < min_frac:
+        return 0.0, "flow two-sided"
+    is_call = str(opt_type).lower().startswith("c")
+    strength = min(1.0, abs(imb))
+    aligned = (imb > 0) == is_call  # call-heavy premium favors calls, put-heavy favors puts
+    side = "calls" if imb > 0 else "puts"
+    mark = "✓" if aligned else "✗"
+    pts = align_bonus * strength if aligned else -oppose_penalty * strength
+    return pts, f"flow {side}-led {abs(imb) * 100:.0f}% {mark}"
+
+
+# Per-regime emphasis for the four directional overlays. A positive-gamma (pinning /
+# mean-reverting) book makes the GEX structure and dealer-flow reads reliable while
+# momentum chops, so EMA is down-weighted and structure up-weighted; a negative-gamma
+# (trending) book has weak walls and accelerating price, so momentum/flow lead and the
+# structure read is cut. Tunable from config (``conviction_regime_weights``).
+DEFAULT_REGIME_WEIGHTS = {
+    "positive": {"ema": 0.7, "gex": 1.2, "vanna": 1.0, "flow": 0.9},
+    "negative": {"ema": 1.2, "gex": 0.5, "vanna": 1.0, "flow": 1.1},
+}
+
+
+def aggregate_conviction(pa_pts, gd_pts, vanna_pts, flow_pts, regime,
+                         weights=None, adaptive=True):
+    """Combine the four directional overlays into one regime-weighted conviction score.
+
+    ``(pa_pts, gd_pts, vanna_pts, flow_pts)`` are the signed EMA / GEX-structure /
+    vanna-sign / order-flow overlays. When ``adaptive`` they are weighted by the gamma
+    regime (see ``DEFAULT_REGIME_WEIGHTS``) so the screen leans on whichever signals are
+    trustworthy in that regime; otherwise every weight is 1.0. Alignment counts are taken
+    on the *unweighted* signs (weighting never flips a sign) and drive the confluence gate
+    in the agent.
+
+    Returns ``(conviction, aligned_count, opposed_count)``.
+    """
+    signals = {"ema": _num(pa_pts), "gex": _num(gd_pts),
+               "vanna": _num(vanna_pts), "flow": _num(flow_pts)}
+    if adaptive:
+        w = (weights or DEFAULT_REGIME_WEIGHTS).get(
+            regime, DEFAULT_REGIME_WEIGHTS["negative"])
+    else:
+        w = {k: 1.0 for k in signals}
+    conviction = sum(w.get(k, 1.0) * v for k, v in signals.items())
+    aligned = sum(1 for v in signals.values() if v > 0)
+    opposed = sum(1 for v in signals.values() if v < 0)
+    return conviction, aligned, opposed
+
+
 def compute_composite_score(row, spot, weights, dte=1, gex_balance=0.0, em_pct=0.0,
                             vanna_ex=0.0, charm_ex=0.0, max_vex=0.0, max_cex=0.0):
     """Composite 0-100 score; thin wrapper over score_components + weighted_score."""

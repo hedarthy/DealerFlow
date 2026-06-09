@@ -16,6 +16,14 @@
   "min_moneyness_high_conv": 30,
   "enable_price_action_filter": true,
   "enable_gex_directional_filter": true,
+  "enable_vanna_directional_filter": true,
+  "enable_flow_imbalance_filter": true,
+  "regime_adaptive_weights": true,
+  "min_confluence_high_conv": 2,
+  "conviction_regime_weights": {
+    "positive": {"ema": 0.7, "gex": 1.2, "vanna": 1.0, "flow": 0.9},
+    "negative": {"ema": 1.2, "gex": 0.5, "vanna": 1.0, "flow": 1.1}
+  },
   "enable_event_filter": true,
   "event_dates": {
     "AAPL": ["2026-06-08"]

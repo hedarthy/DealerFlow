@@ -16,7 +16,10 @@ from datetime import date, datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.gex_calculator import bs_greeks, contract_exposures, select_window_strikes
-from src.scorer import score_components, weighted_score, dominant_edge
+from src.scorer import (
+    score_components, weighted_score, dominant_edge,
+    vanna_directional_adjustment, flow_imbalance_adjustment, aggregate_conviction,
+)
 from src.event_calendar import (
     _to_date, ticker_event_dates, event_in_window,
 )
@@ -169,12 +172,84 @@ def test_candidates_table_smoke():
     print("ok  render_candidates_table smoke (calls/puts, event-risk row, 1-row)")
 
 
+def test_vanna_directional_adjustment():
+    # Positive net dealer vanna (IV-drop -> dealer buying) confirms calls, opposes puts.
+    assert vanna_directional_adjustment("call", net_vex=1e6, gross_vex=1e6) == (8.0, "vanna tailwind (+net vanna) ✓")
+    p, _ = vanna_directional_adjustment("put", net_vex=1e6, gross_vex=1e6)
+    assert p == -8.0
+    # Negative net vanna flips the alignment.
+    assert vanna_directional_adjustment("put", net_vex=-1e6, gross_vex=1e6)[0] == 8.0
+    assert vanna_directional_adjustment("call", net_vex=-1e6, gross_vex=1e6)[0] == -8.0
+    # Strength scales with |net|/gross.
+    assert abs(vanna_directional_adjustment("call", net_vex=0.5, gross_vex=1.0)[0] - 4.0) < 1e-9
+    # A balanced book (|bal| < min_frac) and an empty book are neutral.
+    assert vanna_directional_adjustment("call", net_vex=0.02, gross_vex=1.0) == (0.0, "vanna balanced")
+    assert vanna_directional_adjustment("call", net_vex=5.0, gross_vex=0.0) == (0.0, "vanna n/a")
+    print("ok  vanna_directional_adjustment (sign, strength, balanced/n-a neutral)")
+
+
+def test_flow_imbalance_adjustment():
+    # Call-heavy traded premium confirms calls, opposes puts; strength scales with skew.
+    pts, lbl = flow_imbalance_adjustment("call", call_prem=300.0, put_prem=100.0)
+    assert abs(pts - 4.0) < 1e-9 and "calls-led" in lbl and "✓" in lbl
+    assert abs(flow_imbalance_adjustment("put", 300.0, 100.0)[0] + 4.0) < 1e-9
+    # Put-heavy flips it.
+    assert flow_imbalance_adjustment("put", 100.0, 300.0)[0] > 0
+    assert flow_imbalance_adjustment("call", 100.0, 300.0)[0] < 0
+    # A two-sided tape (|imb| < min_frac) and no premium are neutral.
+    assert flow_imbalance_adjustment("call", 105.0, 95.0) == (0.0, "flow two-sided")
+    assert flow_imbalance_adjustment("call", 0.0, 0.0) == (0.0, "flow n/a")
+    print("ok  flow_imbalance_adjustment (sign, strength, two-sided/n-a neutral)")
+
+
+def test_aggregate_conviction():
+    # Positive-gamma weighting leans on structure (gex 1.2) + flow, down-weights EMA (0.7).
+    conv, aligned, opposed = aggregate_conviction(12.0, 10.0, 8.0, 8.0, "positive")
+    assert abs(conv - (0.7 * 12 + 1.2 * 10 + 1.0 * 8 + 0.9 * 8)) < 1e-9
+    assert (aligned, opposed) == (4, 0)
+    # Negative-gamma weighting up-weights EMA (1.2) + flow (1.1), cuts structure (0.5).
+    conv_n, _, _ = aggregate_conviction(12.0, 10.0, 8.0, 8.0, "negative")
+    assert abs(conv_n - (1.2 * 12 + 0.5 * 10 + 1.0 * 8 + 1.1 * 8)) < 1e-9
+    # adaptive=False is a plain unweighted sum.
+    assert abs(aggregate_conviction(12.0, 10.0, 8.0, 8.0, "positive", adaptive=False)[0] - 38.0) < 1e-9
+    # Alignment counts use the unweighted signs; an unknown regime falls back to negative.
+    conv_m, al, op = aggregate_conviction(-15.0, 0.0, 8.0, -4.0, "neutral")
+    assert (al, op) == (1, 2)
+    print("ok  aggregate_conviction (regime weighting, counts, adaptive toggle, fallback)")
+
+
+def test_flow_premium_split():
+    try:
+        import pandas as pd
+        from datetime import timedelta
+        from src.daily_options_agent import _flow_premium_split
+        from src.timeutil import eastern_now
+    except Exception as e:
+        print(f"skip flow premium split (deps unavailable: {e})")
+        return
+    today = eastern_now().date()
+    near = (today + timedelta(days=1)).strftime("%Y-%m-%d")   # dte 1, in window
+    far = (today + timedelta(days=30)).strftime("%Y-%m-%d")   # dte 30, excluded
+    near_df = pd.DataFrame([
+        {"opt_type": "call", "volume": 100, "lastPrice": 2.0},   # 100*2*100 = 20,000
+        {"opt_type": "put", "volume": 50, "lastPrice": 1.0},     # 50*1*100  =  5,000
+    ])
+    far_df = pd.DataFrame([{"opt_type": "call", "volume": 999, "lastPrice": 9.0}])
+    call_p, put_p = _flow_premium_split({near: near_df, far: far_df}, dte_max=2)
+    assert abs(call_p - 20000.0) < 1e-6 and abs(put_p - 5000.0) < 1e-6  # far expiry excluded
+    print("ok  _flow_premium_split (call/put premium, DTE-window filtered)")
+
+
 if __name__ == "__main__":
     test_vex_per_one_sigma()
     test_vex_rescale_is_selection_invariant()
     test_select_window_strikes()
     test_to_date_coercion()
     test_event_filter_manual()
+    test_vanna_directional_adjustment()
+    test_flow_imbalance_adjustment()
+    test_aggregate_conviction()
+    test_flow_premium_split()
     test_heatmap_triptych_smoke()
     test_candidates_table_smoke()
     print("\nAll screener-extras tests passed.")
