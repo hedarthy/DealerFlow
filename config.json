@@ -9,7 +9,7 @@
     "PENG", "GFS", "UMC", "JBL", "CLS", "FLEX",
     "ANET", "VRT", "ASTS", "AMBQ"
   ],
-  "dte_max": 2,
+  "dte_max": 7,
   "min_volume": 500,
   "min_premium_k": 25,
   "high_conviction_cutoff": 75,
