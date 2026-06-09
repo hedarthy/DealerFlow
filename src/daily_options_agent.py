@@ -11,7 +11,11 @@ from src.gex_calculator import (
     compute_exposure_grids, cumulative_zero_cross,
     get_key_levels, get_regime, get_vanna_regime, _expiry_T,
 )
-from src.scorer import score_components, weighted_score, dominant_edge, price_action_adjustment, gex_directional_adjustment
+from src.scorer import (
+    score_components, weighted_score, dominant_edge, price_action_adjustment,
+    gex_directional_adjustment, vanna_directional_adjustment,
+    flow_imbalance_adjustment, aggregate_conviction,
+)
 from src.strategy_generator import generate_strategy
 from src.utils import load_previous_close, save_current_close, send_discord
 from src.cboe_source import fetch_cboe
@@ -37,6 +41,33 @@ def _f(x, default=0.0):
     except (TypeError, ValueError):
         return default
     return v if v == v else default  # v != v is True only for NaN
+
+
+def _flow_premium_split(chains, dte_max):
+    """Sum the day's traded option premium (vol × lastPrice × 100), split call vs put,
+    across every expiry inside the DTE window.
+
+    A per-ticker order-flow proxy: heavy $-premium skewed into calls (puts) is a bullish
+    (bearish) lean. Computed once per ticker and fed to ``flow_imbalance_adjustment``.
+    Returns ``(call_premium, put_premium)`` in raw dollars.
+    """
+    call_prem = put_prem = 0.0
+    today = eastern_now().date()
+    for exp_str, df in chains.items():
+        try:
+            exp_close = datetime.strptime(exp_str, "%Y-%m-%d").replace(hour=16, minute=0)
+        except (ValueError, TypeError):
+            continue
+        dte = (exp_close.date() - today).days
+        if dte < 0 or dte > dte_max:
+            continue
+        for _, row in df.iterrows():
+            prem = max(0.0, _f(row.get("volume", 0))) * max(0.0, _f(row.get("lastPrice", 0))) * 100.0
+            if str(row.get("opt_type", "call")).lower().startswith("c"):
+                call_prem += prem
+            else:
+                put_prem += prem
+    return call_prem, put_prem
 
 
 def render_heatmap(contract, gex_grid, vex_grid, path):
@@ -147,27 +178,32 @@ def build_pick_message(rank, contract, keys, regime, mode, date):
             f"put wall {rel(keys['put_wall'])}\n")
     msg += "**Plan**\n" + "\n".join(f"- {b}" for b in bullets) + "\n"
 
-    # One compact confirmation line instead of four verbose bullets. Tailwinds go on
-    # the Confirms line; side-opposed reads (a put's "positive vanna", tangled EMAs)
-    # are surfaced separately as a Caution so nothing is mislabelled as confirmation.
-    is_call = contract["type"] == "call"
+    # Conviction read: drive Confirms / Caution off the four structured directional
+    # signals that actually scored (EMA stack, GEX structure, vanna sign, order flow), so
+    # the display matches the math. A signal with positive points confirms the side, a
+    # negative one cautions; neutral/absent signals are omitted. The summary line shows
+    # the regime-weighted conviction and how many signals agreed.
     confirms, cautions = [], []
-    pa_label = contract.get("pa_label")
-    if pa_label and pa_label not in ("n/a", "EMAs mixed"):
-        confirms.append(pa_label)
-    elif pa_label == "EMAs mixed":
-        cautions.append("price tangled in 8/21 EMAs — no trend")
-    gd_label = contract.get("gd_label")
-    if gd_label and contract.get("gd_pts", 0.0) > 0:
-        confirms.append(gd_label)
-    if vanna_regime == "positive":
-        (confirms if is_call else cautions).append(
-            "vanna tailwind (IV drop → dealer buying)" if is_call
-            else "vanna headwind (IV drop → dealer buying lifts the underlying)")
-    elif vanna_regime == "negative":
-        (cautions if is_call else confirms).append(
-            "vanna headwind (IV drop → dealer selling)" if is_call
-            else "vanna tailwind (IV drop → dealer selling)")
+    signal_specs = [
+        (contract.get("pa_label"), contract.get("pa_pts", 0.0)),
+        (contract.get("gd_label"), contract.get("gd_pts", 0.0)),
+        (contract.get("vn_label"), contract.get("vn_pts", 0.0)),
+        (contract.get("fl_label"), contract.get("fl_pts", 0.0)),
+    ]
+    for label, pts in signal_specs:
+        if pts > 0:
+            confirms.append(label)
+        elif pts < 0:
+            cautions.append(label)
+        elif label == "EMAs mixed":
+            cautions.append("price tangled in 8/21 EMAs — no trend")
+        # pts == 0 otherwise is a neutral read and contributes to neither side
+    aligned = int(contract.get("aligned", 0))
+    opposed = int(contract.get("opposed", 0))
+    conv = contract.get("conviction", 0.0)
+    msg += (f"**Conviction:** {regime or '—'}-γ · {aligned} signal"
+            f"{'s' if aligned != 1 else ''} aligned, {opposed} opposed · "
+            f"{conv:+.1f} pts over base {contract.get('base_score', 0.0):.0f}\n")
     if confirms:
         msg += "**Confirms:** " + " · ".join(confirms) + "\n"
     if cautions:
@@ -298,6 +334,10 @@ def main(mode: str, force: bool = False):
     previous = load_previous_close() if mode == "morning" else None
     pa_enabled = bool(config.get("enable_price_action_filter", False))
     gd_enabled = bool(config.get("enable_gex_directional_filter", False))
+    vanna_enabled = bool(config.get("enable_vanna_directional_filter", False))
+    flow_enabled = bool(config.get("enable_flow_imbalance_filter", False))
+    adaptive = bool(config.get("regime_adaptive_weights", False))
+    regime_weights = config.get("conviction_regime_weights") or None
     event_enabled = bool(config.get("enable_event_filter", False))
     event_dates_map = config.get("event_dates", {}) if event_enabled else {}
 
@@ -317,6 +357,10 @@ def main(mode: str, force: bool = False):
             if last_close and spot and abs(spot / last_close - 1.0) > 0.25:
                 print(f"⚠️  {ticker}: {source} spot {spot:.2f} diverges >25% from prior "
                       f"close {last_close:.2f} — possible stale quote")
+            # Per-ticker signed order-flow proxy: the day's call vs put traded premium
+            # across the DTE window. Computed once here and reused for every contract.
+            ticker_call_prem, ticker_put_prem = (
+                _flow_premium_split(chains, config["dte_max"]) if flow_enabled else (0.0, 0.0))
             # Known binary catalysts (manual config map + best-effort earnings) for this
             # ticker. Resolved once per name; the per-contract window check below decides
             # whether a given expiry actually straddles one.
@@ -348,6 +392,8 @@ def main(mode: str, force: bool = False):
                 vanna_flip = cumulative_zero_cross(vex_grid, spot)
                 total_vex_m = sum(vex_grid.values()) / 1e6
                 total_cex_m = sum(cex_grid.values()) / 1e6
+                net_vex = sum(vex_grid.values())
+                gross_vex = sum(abs(x) for x in vex_grid.values())
                 max_vex = max((abs(x) for x in vex_grid.values()), default=0.0)
                 max_cex = max((abs(x) for x in cex_grid.values()), default=0.0)
                 # Net dealer gamma balance in [-1, 1]: the scale-free regime signal
@@ -384,15 +430,29 @@ def main(mode: str, force: bool = False):
                     opt_type = row.get("opt_type", "call")
                     pa_pts, pa_label = (price_action_adjustment(opt_type, spot, ema8, ema21)
                                         if pa_enabled else (0.0, None))
-                    # Dealer-positioning DIRECTIONAL read from the GEX structure: the
-                    # base score and greeks are side-symmetric, so this (with the EMA
-                    # overlay) is what actually decides call vs put for a pick.
+                    # Dealer-positioning DIRECTIONAL read from the GEX structure (only
+                    # asserted where the structure is reliable — see scorer).
                     gd_pts, gd_label = (gex_directional_adjustment(
                                             opt_type, spot, key_levels["gamma_flip"],
                                             key_levels["call_wall"], key_levels["put_wall"],
                                             regime, em_pct=em_pct)
                                         if gd_enabled else (0.0, None))
-                    raw = base + pa_pts + gd_pts  # rank on the raw overlay-adjusted value
+                    # Dealer-FLOW directional reads, now intrinsic to conviction: the sign
+                    # of net dealer vanna, and the day's call-vs-put traded-premium skew.
+                    vn_pts, vn_label = (vanna_directional_adjustment(
+                                            opt_type, net_vex, gross_vex)
+                                        if vanna_enabled else (0.0, None))
+                    fl_pts, fl_label = (flow_imbalance_adjustment(
+                                            opt_type, ticker_call_prem, ticker_put_prem)
+                                        if flow_enabled else (0.0, None))
+                    # Regime-weighted conviction: lean on the GEX structure + dealer flow
+                    # in a positive-γ (pinning) book, on momentum + flow in a negative-γ
+                    # (trending) book. aligned/opposed count the unweighted signal signs
+                    # and drive the confluence gate at selection.
+                    conviction, aligned, opposed = aggregate_conviction(
+                        pa_pts, gd_pts, vn_pts, fl_pts, regime,
+                        weights=regime_weights, adaptive=adaptive)
+                    raw = base + conviction  # rank on the raw conviction-adjusted value
                     score = min(100.0, max(0.0, raw))  # display/threshold value, clamped
                     contract = {
                         "ticker": ticker,
@@ -405,6 +465,9 @@ def main(mode: str, force: bool = False):
                         "score": _f(score),
                         "rank_score": _f(raw),
                         "base_score": _f(base),
+                        "conviction": _f(conviction),
+                        "aligned": int(aligned),
+                        "opposed": int(opposed),
                         "edge": dominant_edge(comps, config["score_weights"]),
                         "moneyness": _f(comps["moneyness_dte"]),
                         "em_pct": _f(em_pct),
@@ -414,6 +477,10 @@ def main(mode: str, force: bool = False):
                         "gd_label": gd_label,
                         "gd_pts": _f(gd_pts),
                         "gex_opposed": gd_pts < 0,
+                        "vn_label": vn_label,
+                        "vn_pts": _f(vn_pts),
+                        "fl_label": fl_label,
+                        "fl_pts": _f(fl_pts),
                         "ema8": ema8,
                         "ema21": ema21,
                         "premium_est": _f(premium_est),
@@ -449,24 +516,30 @@ def main(mode: str, force: bool = False):
 
     cutoff = config["high_conviction_cutoff"]
     min_mny = config.get("min_moneyness_high_conv", 0)
-    overlays_on = pa_enabled or gd_enabled
+    overlays_on = pa_enabled or gd_enabled or vanna_enabled or flow_enabled
+    # Minimum number of independent directional signals (EMA / GEX-structure / vanna
+    # sign / order-flow) that must AGREE for a top-two pick. This is the core of the
+    # redesign: conviction now means *confluence of dealer-flow reads*, not a single
+    # confirmation clearing a threshold. Set to 1 in config to restore the old behavior.
+    min_confluence = int(config.get("min_confluence_high_conv", 1))
 
     def _opposed(c):
-        # A pick must not fight EITHER enabled directional overlay.
-        return bool(c.get("pa_opposed")) or bool(c.get("gex_opposed"))
+        # A pick must not fight ANY enabled directional signal.
+        return int(c.get("opposed", 0)) > 0
 
     def _confirmed(c):
-        # ...and must carry at least one POSITIVE directional confirmation (EMA stack
-        # or GEX structure). This keeps coin-flip directionals — strong base score but
-        # no real read on call-vs-put — out of the top two.
-        return c.get("pa_pts", 0.0) > 0 or c.get("gd_pts", 0.0) > 0
+        # ...and at least `min_confluence` independent signals must confirm it. This keeps
+        # coin-flip directionals — a strong base score with no real read on call-vs-put —
+        # out of the top two, and demands genuine agreement among the dealer-flow reads.
+        return int(c.get("aligned", 0)) >= min_confluence
 
     # High conviction: clear the cutoff, be reachable within ~a day's expected move
     # (the moneyness floor keeps un-hittable far-OTM lottery strikes — which can top the
-    # board on raw vanna concentration alone — out of the top two), fight neither
-    # overlay, and (when any overlay is enabled) be confirmed by at least one. We gate
-    # BEFORE the per-ticker dedupe so a ticker whose top raw contract is counter-trend
-    # still contributes its best *confirmed* contract instead of being dropped entirely.
+    # board on raw vanna concentration alone — out of the top two), fight NO directional
+    # signal, and (when overlays are on) be confirmed by at least `min_confluence` of
+    # them. We gate BEFORE the per-ticker dedupe so a ticker whose top raw contract is
+    # counter-trend still contributes its best *confluent* contract instead of being
+    # dropped entirely.
     eligible_high = [r for r in results
                      if r[0]["score"] >= cutoff and r[0].get("moneyness", 0) >= min_mny
                      and not _opposed(r[0])

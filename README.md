@@ -69,9 +69,10 @@ Each contract gets a 0–100 composite from five **continuous** components — G
 liquid names spread across the range instead of piling onto one plateau. The dominant
 weighted component is surfaced as the pick's **Edge**.
 
-Two **directional confirmation overlays** sit on top of that (otherwise side-symmetric)
-base score, because gamma/vanna/charm are nearly identical for a call and a put on the
-same strike — without them the call-vs-put choice is barely better than a coin flip:
+**Four directional dealer-flow overlays** sit on top of that (otherwise side-symmetric)
+base score, because gamma/vanna/charm magnitudes are nearly identical for a call and a put
+on the same strike — without a directional read the call-vs-put choice is barely better
+than a coin flip. Each returns signed points (+ confirms the side, − opposes it, 0 neutral):
 
 - **Dealer structure (GEX).** In a *positive-gamma* (mean-reverting) book the gamma flip is
   real support and the walls are real magnets, so a call sitting above the flip with room
@@ -80,12 +81,32 @@ same strike — without them the call-vs-put choice is barely better than a coin
   flip's reclaim zone is neutral. In a *negative-gamma* (trending) book the walls are weak,
   so this overlay abstains and defers to momentum — it never fades a breakout. Bands scale
   with the expected move. Toggle via `enable_gex_directional_filter`.
+- **Net vanna sign.** The *direction* of the dealer hedge already printed as the vanna
+  regime, now actually scored: positive net dealer vanna means an IV drop forces dealer
+  **buying** (a tailwind for calls), negative net favours puts. Scaled by how lopsided the
+  book is (`|net| / gross`); a modest overlay because the hedge flips if IV *rises*. Toggle
+  via `enable_vanna_directional_filter`.
+- **Order-flow imbalance.** The day's traded **premium** (volume × price) skewed call-vs-put
+  — a crude aggressor proxy for bullish/bearish lean, scaled by the skew. Toggle via
+  `enable_flow_imbalance_filter`.
 - **Price action (8/21 EMA stack)**, below.
+
+These four are combined into a single **regime-adaptive conviction** score: in a
+positive-γ (pinning) book the screen leans on dealer **structure** and flow and
+down-weights momentum; in a negative-γ (trending) book it leans on **momentum** and flow
+and cuts the (unreliable) structure read. The per-regime weights are tunable via
+`conviction_regime_weights` / `regime_adaptive_weights`. The contract is ranked on
+`base + conviction`.
 
 A pick reaches **high conviction** only if it clears the score cutoff, is **reachable**
 (near enough the money for its expected move — `min_moneyness_high_conv`, which keeps
 un-hittable far-OTM lottery strikes that top the board on raw vanna concentration out of
-the top two), fights **neither** overlay, and is **confirmed by at least one**.
+the top two), fights **none** of the four overlays, and is **confirmed by a confluence of
+at least `min_confluence_high_conv` of them** (default 2). Conviction here means *agreement
+across independent dealer-flow reads*, not a single confirmation clearing a threshold. Each
+alert prints the regime, the aligned/opposed signal count, and every confirming/cautioning
+read. Set `min_confluence_high_conv: 1` and disable the new filters to restore the prior
+single-confirmation behaviour — the whole layer is reversible from config.
 
 > All time-sensitive math (time-to-expiry → near-expiry gamma, the DTE window, the 0-DTE
 > "past today's close" cutoff, the report date) is measured in **US/Eastern market time**,
@@ -103,9 +124,10 @@ methodology for higher-probability entries.
 
 ### Discord output (3 messages)
 
-1. High-conviction pick #1 — regime + price-action **bias** + dealer-**structure** read, a
-   plain-English regime note, strategy bullets (incl. EMA + structure confirmation), and its
-   own GEX/VEX heatmap.
+1. High-conviction pick #1 — a regime-weighted **conviction** line (gamma regime, how many
+   of the four dealer-flow overlays aligned vs opposed, and the conviction points over the
+   base score), a plain-English regime note, strategy bullets, every confirming/cautioning
+   read, and its own GEX/VEX heatmap.
 2. High-conviction pick #2 — same, for a **different** ticker (picks are deduped by
    underlying so #1 and #2 are never the same name).
 3. Additional candidates — a rendered **PNG table** (ticker / type / strike / **OTM%** /
@@ -192,6 +214,13 @@ Edit `config.json`:
   lottery strikes out of the two high-conviction picks.
 - `enable_price_action_filter` — toggle the 8/21 EMA confirmation/trend gate.
 - `enable_gex_directional_filter` — toggle the dealer-structure (flip/wall) directional gate.
+- `enable_vanna_directional_filter` — toggle the net-vanna-sign directional overlay.
+- `enable_flow_imbalance_filter` — toggle the call-vs-put traded-premium order-flow overlay.
+- `regime_adaptive_weights` — weight the four overlays by the gamma regime (vs flat 1.0).
+- `conviction_regime_weights` — per-regime (`positive`/`negative`) emphasis for the
+  `ema` / `gex` / `vanna` / `flow` overlays.
+- `min_confluence_high_conv` — minimum number of overlays that must agree for a top-two pick
+  (default 2; set to 1 for the prior single-confirmation behaviour).
 - `score_weights` — weights for GEX regime, flow proxy, squeeze, vanna/charm, moneyness
   (must sum to 1.0).
 
