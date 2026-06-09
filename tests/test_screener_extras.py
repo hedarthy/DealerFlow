@@ -173,8 +173,8 @@ def test_candidates_table_smoke():
 
 
 def test_vanna_directional_adjustment():
-    # Positive net dealer vanna (IV-drop -> dealer buying) confirms calls, opposes puts.
-    assert vanna_directional_adjustment("call", net_vex=1e6, gross_vex=1e6) == (8.0, "vanna tailwind (+net vanna) ✓")
+    # Positive net dealer vanna (positive-γ, IV-drop -> dealer buying) confirms calls, opposes puts.
+    assert vanna_directional_adjustment("call", net_vex=1e6, gross_vex=1e6) == (8.0, "vanna tailwind (+net vanna, IV↓) ✓")
     p, _ = vanna_directional_adjustment("put", net_vex=1e6, gross_vex=1e6)
     assert p == -8.0
     # Negative net vanna flips the alignment.
@@ -185,7 +185,11 @@ def test_vanna_directional_adjustment():
     # A balanced book (|bal| < min_frac) and an empty book are neutral.
     assert vanna_directional_adjustment("call", net_vex=0.02, gross_vex=1.0) == (0.0, "vanna balanced")
     assert vanna_directional_adjustment("call", net_vex=5.0, gross_vex=0.0) == (0.0, "vanna n/a")
-    print("ok  vanna_directional_adjustment (sign, strength, balanced/n-a neutral)")
+    # In a NEGATIVE-gamma book the IV-direction assumption breaks (spot-vol correlation),
+    # so the overlay abstains regardless of the vanna sign.
+    assert vanna_directional_adjustment("put", net_vex=-1e6, gross_vex=1e6, regime="negative") == (0.0, "vanna n/a (neg-γ: IV dir ambiguous)")
+    assert vanna_directional_adjustment("call", net_vex=1e6, gross_vex=1e6, regime="negative")[0] == 0.0
+    print("ok  vanna_directional_adjustment (regime-gated sign, strength, neutral cases)")
 
 
 def test_flow_imbalance_adjustment():
