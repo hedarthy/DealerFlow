@@ -82,16 +82,27 @@ def dominant_edge(components, weights):
 
 
 def price_action_adjustment(opt_type, spot, ema8, ema21,
-                            align_bonus=12.0, oppose_penalty=15.0, tol=0.001):
-    """SeanTrades 8/21 EMA-stack confirmation, returned as additive score points.
+                            align_bonus=12.0, oppose_penalty=12.0, tol=0.001,
+                            soft_frac=0.6):
+    """SeanTrades 8/21 EMA-stack confirmation (loosened), returned as additive points.
 
-    A bullish stack (spot > ema8 > ema21) confirms calls and opposes puts; a bearish
-    stack (spot < ema8 < ema21) confirms puts and opposes calls; price tangled in the
-    EMAs is "mixed" (no opinion). A small ``tol`` band keeps a spot sitting right on an
-    EMA from flip-flopping the signal. This is layered as an additive overlay rather
-    than a weighted component so it can be toggled off without disturbing the normalised
-    component weights — a confirmed trade is nudged up, a counter-trend one docked and
-    (in the agent) barred from the top-two high-conviction picks.
+    The original rule demanded a *clean* stack (spot > ema8 > ema21 for calls, the mirror
+    for puts) and treated everything else as no-opinion. That's a tight gate, so these
+    ground rules are thinned out a little:
+
+    * **Confirmations are graded.** Trading *with* price on the right side of **both**
+      EMAs is a tailwind even before the EMAs themselves line up: a clean stack earns the
+      full ``align_bonus``, while price above (below) both EMAs but without the 8/21 yet
+      stacked earns a partial ``align_bonus * soft_frac``. This surfaces fresh
+      reclaims/breaks that the strict stack would miss.
+    * **Oppositions stay tight.** Only a *clean opposite* stack docks a trade (a call into
+      a full bear stack, a put into a full bull stack); a merely soft or tangled tape is
+      neutral, so it no longer bars a pick from the top two. The penalty is also eased
+      (12, was 15) so price action nudges rather than dominates.
+
+    A small ``tol`` band keeps a spot sitting right on an EMA from flip-flopping the
+    signal. Layered as an additive overlay (not a weighted component) so it can be toggled
+    off without disturbing the normalised component weights.
 
     Returns ``(points, label)``: points > 0 confirms, < 0 opposes, 0 is neutral.
     """
@@ -99,12 +110,25 @@ def price_action_adjustment(opt_type, spot, ema8, ema21,
     if s <= 0 or e8 <= 0 or e21 <= 0:
         return 0.0, "n/a"
     is_call = str(opt_type).lower().startswith("c")
-    if s > e8 * (1 + tol) and e8 > e21 * (1 + tol):
-        return (align_bonus, "8/21 bull stack ✓") if is_call \
-            else (-oppose_penalty, "counter 8/21 bull stack ✗")
-    if s < e8 * (1 - tol) and e8 < e21 * (1 - tol):
-        return (align_bonus, "8/21 bear stack ✓") if not is_call \
-            else (-oppose_penalty, "counter 8/21 bear stack ✗")
+    hi, lo = (e8, e21) if e8 >= e21 else (e21, e8)
+    strict_bull = s > e8 * (1 + tol) and e8 > e21 * (1 + tol)
+    strict_bear = s < e8 * (1 - tol) and e8 < e21 * (1 - tol)
+    above_both = s > hi * (1 + tol)
+    below_both = s < lo * (1 - tol)
+    # Confirmations (loosened): trading with price above/below BOTH EMAs is a tailwind,
+    # full strength on a clean stack, partial when the 8/21 haven't aligned yet.
+    if is_call and above_both:
+        return (align_bonus, "8/21 bull stack ✓") if strict_bull \
+            else (align_bonus * soft_frac, "above 8/21 EMAs ✓")
+    if (not is_call) and below_both:
+        return (align_bonus, "8/21 bear stack ✓") if strict_bear \
+            else (align_bonus * soft_frac, "below 8/21 EMAs ✓")
+    # Oppositions (kept tight): only a CLEAN opposite stack docks the trade, so a soft or
+    # tangled tape stays neutral instead of barring the pick.
+    if is_call and strict_bear:
+        return -oppose_penalty, "counter 8/21 bear stack ✗"
+    if (not is_call) and strict_bull:
+        return -oppose_penalty, "counter 8/21 bull stack ✗"
     return 0.0, "EMAs mixed"
 
 

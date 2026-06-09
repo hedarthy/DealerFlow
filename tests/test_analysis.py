@@ -50,17 +50,23 @@ def test_gex_directional():
 
 
 def test_price_action():
-    # Bull stack: confirms calls, opposes puts.
-    assert pa("call", 105.0, 102.0, 100.0)[0] > 0
+    # Clean bull stack: full-strength confirm for calls, opposes puts.
+    assert pa("call", 105.0, 102.0, 100.0)[0] == 12.0
     assert pa("put", 105.0, 102.0, 100.0)[0] < 0
-    # Bear stack: confirms puts, opposes calls.
-    assert pa("put", 95.0, 98.0, 100.0)[0] > 0
+    # Clean bear stack: confirms puts, opposes calls.
+    assert pa("put", 95.0, 98.0, 100.0)[0] == 12.0
     assert pa("call", 95.0, 98.0, 100.0)[0] < 0
-    # Price tangled in the EMAs -> no opinion.
+    # Thinned ground rules: price above BOTH EMAs but 8/21 not yet stacked (ema8 < ema21)
+    # is a *soft* confirm for calls (partial bonus)...
+    soft_pts, soft_lbl = pa("call", 103.0, 100.0, 102.0)
+    assert 0 < soft_pts < 12.0 and "soft" not in soft_lbl and "✓" in soft_lbl
+    # ...and crucially does NOT oppose the opposite side — a put there is neutral, not docked.
+    assert pa("put", 103.0, 100.0, 102.0)[0] == 0.0
+    # Price tangled between the EMAs -> no opinion.
     assert pa("call", 101.0, 100.0, 102.0)[0] == 0.0
     # Missing EMAs -> abstain.
     assert pa("call", 100.0, None, None)[0] == 0.0
-    print("ok  price_action_adjustment")
+    print("ok  price_action_adjustment (graded confirm, tight oppose, soft tier neutral)")
 
 
 def test_cumulative_zero_cross():

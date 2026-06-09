@@ -115,12 +115,14 @@ single-confirmation behaviour — the whole layer is reversible from config.
 ### Price-action confirmation
 
 On top of the dealer-greek score, an **8/21 EMA stack** filter (computed from yfinance
-daily closes) confirms momentum: a bullish stack (spot > 8EMA > 21EMA) confirms calls and a
-bearish stack confirms puts. Confirmation adds points; a counter-trend contract is docked
-and **barred from the two high-conviction picks** — so the top ideas must agree with both
-dealer positioning *and* price action. Toggle via `enable_price_action_filter` in
-`config.json`. Price-action layer inspired by [@SRxTrades](https://x.com/SRxTrades)' swing
-methodology for higher-probability entries.
+daily closes) confirms momentum. The ground rules are deliberately a little loose:
+confirmation is **graded** — a clean stack (spot > 8EMA > 21EMA for calls, the mirror for
+puts) earns full points, while price merely above (below) **both** EMAs before they've
+stacked earns a partial *soft* confirm, so fresh reclaims/breaks aren't missed. Opposition
+is kept **tight** — only a *clean opposite* stack docks a contract and **bars it from the
+two high-conviction picks**; a soft or tangled tape is neutral. Toggle via
+`enable_price_action_filter` in `config.json`. Price-action layer inspired by
+[@SRxTrades](https://x.com/SRxTrades)' swing methodology for higher-probability entries.
 
 ### Discord output (3 messages)
 
@@ -207,7 +209,8 @@ python tests/test_schedule.py     # NYSE calendar + cron gate
 Edit `config.json`:
 
 - `watchlist` — tickers to scan.
-- `dte_max` — max days to expiration considered.
+- `dte_max` — max days to expiration considered (default 7; the screener scans the
+  `0 <= dte <= dte_max` window, skipping today's expiry once past the 16:00 ET close).
 - `min_volume`, `min_premium_k` — liquidity filters.
 - `high_conviction_cutoff` — score threshold for the top bucket.
 - `min_moneyness_high_conv` — reachability floor (0–100) for the top bucket; keeps far-OTM
