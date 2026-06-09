@@ -16,6 +16,10 @@
   "min_moneyness_high_conv": 30,
   "enable_price_action_filter": true,
   "enable_gex_directional_filter": true,
+  "enable_event_filter": true,
+  "event_dates": {
+    "AAPL": ["2026-06-08"]
+  },
   "score_weights": {
     "gex_regime": 0.20,
     "flow_proxy": 0.25,

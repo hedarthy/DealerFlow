@@ -17,6 +17,8 @@ from src.utils import load_previous_close, save_current_close, send_discord
 from src.cboe_source import fetch_cboe
 from src.timeutil import eastern_now
 from src.market_calendar import is_trading_day, cron_scheduled_et_hour, INTENDED_ET_HOUR
+from src.event_calendar import ticker_event_dates, event_in_window
+from src.heatmap import render_pick_triptych
 
 # Resolve all relative paths (config.json, report.md, artifacts, .env) from repo root,
 # so the agent behaves identically regardless of the caller's working directory.
@@ -57,7 +59,7 @@ def render_heatmap(contract, gex_grid, vex_grid, path):
     axes[0].set_xlabel("")
     axes[0].set_ylabel("Strike")
     sns.heatmap(v, annot=True, cmap="PuOr", center=0, fmt=".1f",
-                ax=axes[1], cbar_kws={"label": "$M / vol-pt"})
+                ax=axes[1], cbar_kws={"label": "$M / 1.00σ"})
     axes[1].set_title("Vanna exposure")
     axes[1].set_xlabel("")
     axes[1].set_ylabel("")
@@ -173,7 +175,7 @@ def build_pick_message(rank, contract, keys, regime, mode, date):
 
     msg += (f"_Vol/OI {contract['vol_oi']:.1f} · OTM {contract['otm']:.1f}% · DTE {contract.get('dte', '?')} · "
             f"~${contract['premium_est'] / 1000:.1f}M prem · {contract.get('source', 'yfinance')} · "
-            f"Σvanna {contract.get('total_vex_m', 0.0):.1f}M/vol-pt · "
+            f"Σvanna {contract.get('total_vex_m', 0.0):.1f}M/1.00σ · "
             f"Σcharm {contract.get('total_cex_m', 0.0):.1f}M/day_")
     return msg
 
@@ -184,13 +186,25 @@ def build_table_message(lower_conv, mode, date):
         return msg + "\n_No additional candidates today._"
     header = f"{'Ticker':<7}{'C/P':<4}{'Strike':>9}{'OTM%':>7}{'DTE':>5}{'Score':>7}{'Vol/OI':>8}  Edge"
     rows = [header, "-" * len(header)]
+    has_event = False
     for contract, *_ in lower_conv:
         tchar = "C" if contract["type"] == "call" else "P"
+        if contract.get("event_risk"):
+            has_event = True
+            lbl = contract.get("event_label") or "event"
+            edge = f"⚠ {lbl}-risk (no high-conv)"
+        else:
+            edge = contract.get("edge", "")
         rows.append(f"{contract['ticker']:<7}{tchar:<4}{contract['strike']:>9.2f}"
                     f"{contract.get('otm', 0.0):>7.1f}"
                     f"{contract.get('dte', '?'):>5}{contract['score']:>7.1f}"
-                    f"{contract['vol_oi']:>8.1f}  {contract.get('edge', '')}")
-    return msg + "```\n" + "\n".join(rows) + "\n```"
+                    f"{contract['vol_oi']:>8.1f}  {edge}")
+    out = msg + "```\n" + "\n".join(rows) + "\n```"
+    if has_event:
+        out += ("\n⚠️ **event-risk** names have a known catalyst (earnings / keynote / etc.) "
+                "on or before expiry — dealer-gamma pinning breaks down across binary events, "
+                "so they are excluded from high conviction. Trade only with an event thesis.")
+    return out
 
 
 def get_chains(ticker):
@@ -265,6 +279,8 @@ def main(mode: str, force: bool = False):
     previous = load_previous_close() if mode == "morning" else None
     pa_enabled = bool(config.get("enable_price_action_filter", False))
     gd_enabled = bool(config.get("enable_gex_directional_filter", False))
+    event_enabled = bool(config.get("enable_event_filter", False))
+    event_dates_map = config.get("event_dates", {}) if event_enabled else {}
 
     for ticker in config["watchlist"]:
         try:
@@ -282,6 +298,11 @@ def main(mode: str, force: bool = False):
             if last_close and spot and abs(spot / last_close - 1.0) > 0.25:
                 print(f"⚠️  {ticker}: {source} spot {spot:.2f} diverges >25% from prior "
                       f"close {last_close:.2f} — possible stale quote")
+            # Known binary catalysts (manual config map + best-effort earnings) for this
+            # ticker. Resolved once per name; the per-contract window check below decides
+            # whether a given expiry actually straddles one.
+            ticker_events = (ticker_event_dates(ticker, event_dates_map, enable_earnings=True)
+                             if event_enabled else [])
             for exp_str, df in sorted(chains.items()):
                 # Skip anything outside the DTE window, and any same-day expiry that
                 # has already passed today's 16:00 close (a 0-DTE close run must not
@@ -290,6 +311,15 @@ def main(mode: str, force: bool = False):
                 dte = (exp_close.date() - eastern_now().date()).days
                 if dte < 0 or dte > config["dte_max"] or eastern_now() >= exp_close:
                     continue
+                # Per-CONTRACT event check over [today, this expiry] — never per-ticker to
+                # the furthest expiry (that would falsely tag short-dated contracts that
+                # close before the catalyst). Date-level on purpose: a same-day expiry on
+                # an event date is flagged (event time isn't reliable; bias to caution). A
+                # flagged expiry is barred from high conviction below and surfaced only as
+                # a caution candidate.
+                event_risk, event_label = (
+                    event_in_window(ticker_events, eastern_now().date(), exp_close.date())
+                    if event_enabled else (False, None))
                 gex_grid, vex_grid, cex_grid = compute_exposure_grids(df, spot, exp_str)
                 if not gex_grid:
                     continue  # no usable open interest; exposures would be meaningless
@@ -376,8 +406,10 @@ def main(mode: str, force: bool = False):
                         "total_cex_m": _f(total_cex_m),
                         "vanna_ex": _f(strike_vex),
                         "charm_ex": _f(strike_cex),
+                        "event_risk": bool(event_risk),
+                        "event_label": event_label,
                     }
-                    results.append((contract, gex_grid, vex_grid, key_levels, regime))
+                    results.append((contract, gex_grid, vex_grid, key_levels, regime, cex_grid))
             time.sleep(0.5)  # gentle pacing across the watchlist
         except Exception as e:
             print(f"Skipping {ticker}: {e}")
@@ -419,6 +451,7 @@ def main(mode: str, force: bool = False):
     eligible_high = [r for r in results
                      if r[0]["score"] >= cutoff and r[0].get("moneyness", 0) >= min_mny
                      and not _opposed(r[0])
+                     and not r[0].get("event_risk")
                      and (_confirmed(r[0]) or not overlays_on)]
     high_conv = _dedupe_by_ticker(eligible_high)[:2]
     high_tickers = {r[0]["ticker"] for r in high_conv}
@@ -441,13 +474,26 @@ def main(mode: str, force: bool = False):
         sections.append("**Price-action check:** only setups aligned with the 8/21 EMA stack "
                         "are eligible for high conviction.\n")
 
-    # Messages 1 & 2: each high-conviction pick gets its own gamma+vanna heatmap.
-    for i, (contract, gex_grid, vex_grid, keys, regime) in enumerate(high_conv, 1):
+    # Messages 1 & 2: each high-conviction pick gets its own dealer-greek heatmap.
+    # Prefer the Skylit-style GEX/VEX/CEX triptych; if it (or its deps) fail for any
+    # reason, degrade gracefully — old 2-panel gamma+vanna heatmap, then text-only —
+    # so a rendering hiccup never drops the actual alert.
+    for i, (contract, gex_grid, vex_grid, keys, regime, cex_grid) in enumerate(high_conv, 1):
         png = f"gex_heatmap_{i}.png"
-        render_heatmap(contract, gex_grid, vex_grid, png)
         msg = build_pick_message(i, contract, keys, regime, mode, date)
         sections.append(msg)
-        send_discord(msg, png)
+        image = png
+        try:
+            render_pick_triptych(contract, gex_grid, vex_grid, cex_grid, png)
+        except Exception as e:
+            print(f"⚠️  triptych render failed for pick {i} ({contract.get('ticker')}): {e} "
+                  f"— falling back to the 2-panel heatmap")
+            try:
+                render_heatmap(contract, gex_grid, vex_grid, png)
+            except Exception as e2:
+                print(f"⚠️  2-panel heatmap also failed for pick {i}: {e2} — posting text only")
+                image = None
+        send_discord(msg, image)
         time.sleep(1)  # be gentle with Discord rate limits between messages
 
     if not high_conv:
