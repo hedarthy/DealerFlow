@@ -36,7 +36,7 @@ the strike axis) — **five Discord messages per run**.
 
 ## Schedule (ET, NYSE trading days only)
 
-9:31 (one minute after the open), then on the hour: 10:00, 11:00, 12:00, 13:00, 14:00,
+9:30 (at the open), then on the hour: 10:00, 11:00, 12:00, 13:00, 14:00,
 15:00, 16:00. Half-day early closes suppress the post-1:00 PM slots.
 
 Robustness: dual EST/EDT UTC crons are deduped by a DST-correct **scheduled-ET-time slot

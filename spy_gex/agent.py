@@ -10,7 +10,7 @@ trader can see where dealer positioning magnetises price across the curve (the g
 flip and the call/put walls). A white line + tag marks spot; the largest-magnitude
 "King" strike is starred.
 
-It runs every NYSE trading day at one minute after the open (9:31 ET) and then on the
+It runs every NYSE trading day at the open (9:30 ET / 6:30 AM PT) and then on the
 hour through the close (10:00 .. 16:00 ET). Expirations rendered: the five nearest SPY
 expiries on/after the run date (0DTE today through ~four sessions out). Each heatmap
 windows to the 25 strikes above and 25 at/below spot.
