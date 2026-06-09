@@ -214,34 +214,48 @@ def gex_directional_adjustment(opt_type, spot, gamma_flip, call_wall, put_wall, 
     return 0.0, "n/a"
 
 
-def vanna_directional_adjustment(opt_type, net_vex, gross_vex,
+def vanna_directional_adjustment(opt_type, net_vex, gross_vex, regime="positive",
                                  align_bonus=8.0, oppose_penalty=8.0, min_frac=0.05):
     """Fold the SIGN of net dealer vanna into a directional read, as additive points.
 
-    VEX = ∂(dealer delta)/∂σ with dealer sign calls +1 / puts −1. A POSITIVE net vanna
-    means that when implied vol falls — the base case into a calm tape and a 0–2 DTE
-    expiry — dealers must BUY the underlying (price support, a tailwind for calls); a
-    NEGATIVE net is a tailwind for puts. This is the directional content of the
-    ``vanna_regime`` the report already prints, now actually scored. The strength scales
-    with how lopsided the book is (``|net| / gross``) so a balanced chain contributes
-    nothing. It stays a modest overlay (not a core weight) because the sign of the hedge
-    flips if IV *rises* instead — we don't predict IV direction.
+    VEX = ∂(dealer delta)/∂σ with dealer sign calls +1 / puts −1. Dealer stock hedge
+    flow from a vol move is ``F = −VEX · Δσ`` (F > 0 = dealer buying = bullish). So the
+    DIRECTION vanna implies is conditional on the *sign of the IV move* — the sign of net
+    vanna alone is not enough.
+
+    We only assert the overlay where that IV assumption is sound: a POSITIVE-gamma
+    (pinning / vol-compressing) book. There realised vol is suppressed and, into a short
+    expiry, IV bleeds DOWN (Δσ < 0), so ``F = +VEX · |Δσ|``: a positive net vanna forces
+    dealer BUYING (a tailwind for calls) and a negative net forces SELLING (a tailwind
+    for puts). This is the classic calm-tape / OPEX "vanna flow".
+
+    In a NEGATIVE-gamma (trending / vol-expanding) book we ABSTAIN. Equities carry a
+    negative spot-vol correlation (Δσ ≈ −β·ΔS): a down-move comes with IV *rising*, which
+    FLIPS the sign of ``F`` versus the calm case. So "−net vanna ⇒ puts" is not reliable
+    in a selloff — exactly the tape where it would otherwise fire. Direction in a
+    negative-γ book is already carried by the (IV-independent) GEX momentum-continuation
+    and order-flow overlays, so vanna adds no trustworthy directional content here.
+
+    Strength scales with how lopsided the book is (``|net| / gross``) so a balanced chain
+    contributes nothing; it stays a modest overlay, never a core weight.
 
     Returns ``(points, label)``: > 0 confirms, < 0 opposes, 0 neutral.
     """
     g = _num(gross_vex)
     if g <= 0:
         return 0.0, "vanna n/a"
+    if regime != "positive":
+        return 0.0, "vanna n/a (neg-γ: IV dir ambiguous)"
     bal = _num(net_vex) / g  # net dealer vanna balance in [-1, 1]
     if abs(bal) < min_frac:
         return 0.0, "vanna balanced"
     is_call = str(opt_type).lower().startswith("c")
     strength = min(1.0, abs(bal))
-    aligned = (bal > 0) == is_call  # +net vanna favors calls, −net favors puts
+    aligned = (bal > 0) == is_call  # +net vanna favors calls, −net favors puts (IV ↓)
     sign_txt = "+net vanna" if bal > 0 else "−net vanna"
     if aligned:
-        return align_bonus * strength, f"vanna tailwind ({sign_txt}) ✓"
-    return -oppose_penalty * strength, f"vanna headwind ({sign_txt}) ✗"
+        return align_bonus * strength, f"vanna tailwind ({sign_txt}, IV↓) ✓"
+    return -oppose_penalty * strength, f"vanna headwind ({sign_txt}, IV↓) ✗"
 
 
 def flow_imbalance_adjustment(opt_type, call_prem, put_prem,

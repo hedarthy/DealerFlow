@@ -86,11 +86,17 @@ than a coin flip. Each returns signed points (+ confirms the side, − opposes i
   opposes calls (breaking a wall accelerates rather than caps, so walls don't veto). This
   never fades a breakout, and it gives put/breakdown setups the same structural confirmation
   calls get. Bands scale with the expected move. Toggle via `enable_gex_directional_filter`.
-- **Net vanna sign.** The *direction* of the dealer hedge already printed as the vanna
-  regime, now actually scored: positive net dealer vanna means an IV drop forces dealer
-  **buying** (a tailwind for calls), negative net favours puts. Scaled by how lopsided the
-  book is (`|net| / gross`); a modest overlay because the hedge flips if IV *rises*. Toggle
-  via `enable_vanna_directional_filter`.
+- **Net vanna sign (positive-γ books only).** The *direction* of the dealer hedge already
+  printed as the vanna regime, now scored — but only where its assumption holds. Vanna's
+  hedge flow is `F = −VEX·Δσ`, so its direction depends on the **sign of the IV move**. In a
+  positive-γ (vol-compressing) book, IV bleeds **down** into a short expiry, so positive net
+  dealer vanna forces **buying** (a tailwind for calls) and negative net forces **selling**
+  (a tailwind for puts). In a negative-γ (trending) book the overlay **abstains**: equities'
+  negative spot-vol correlation means a down-move comes with IV *rising*, which flips the
+  sign — so "−net vanna ⇒ puts" is unreliable in exactly the selloff it would otherwise fire
+  on. There direction is carried by the IV-independent structure/flow reads instead. Scaled
+  by how lopsided the book is (`|net| / gross`); a modest overlay. Toggle via
+  `enable_vanna_directional_filter`.
 - **Order-flow imbalance.** The day's traded **premium** (volume × price) skewed call-vs-put
   — a crude aggressor proxy for bullish/bearish lean, scaled by the skew. Toggle via
   `enable_flow_imbalance_filter`.
@@ -102,9 +108,10 @@ down-weights momentum; in a negative-γ (trending) book it leans on **momentum**
 while the structure read switches to momentum continuation (slightly down-weighted to
 avoid double-counting the EMA trend). The per-regime weights are tunable via
 `conviction_regime_weights` / `regime_adaptive_weights`. The contract is ranked on
-`base + conviction`. Both **calls and puts** are first-class: negative net vanna confirms
-puts just as positive net vanna confirms calls, and the negative-γ structure read confirms
-breakdowns just as positive-γ confirms breakouts.
+`base + conviction`. Both **calls and puts** are first-class: in a positive-γ book negative
+net vanna confirms puts just as positive net vanna confirms calls, and in either regime the
+GEX structure read confirms breakdowns (below the flip) just as it confirms breakouts (above
+it) — so puts are never disadvantaged by the scoring.
 
 A pick reaches **high conviction** only if it clears the score cutoff, is **reachable**
 (near enough the money for its expected move — `min_moneyness_high_conv`, which keeps

@@ -440,7 +440,7 @@ def main(mode: str, force: bool = False):
                     # Dealer-FLOW directional reads, now intrinsic to conviction: the sign
                     # of net dealer vanna, and the day's call-vs-put traded-premium skew.
                     vn_pts, vn_label = (vanna_directional_adjustment(
-                                            opt_type, net_vex, gross_vex)
+                                            opt_type, net_vex, gross_vex, regime)
                                         if vanna_enabled else (0.0, None))
                     fl_pts, fl_label = (flow_imbalance_adjustment(
                                             opt_type, ticker_call_prem, ticker_put_prem)
