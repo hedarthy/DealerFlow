@@ -136,6 +136,39 @@ def test_heatmap_triptych_smoke():
     print("ok  render_pick_triptych smoke (GEX/VEX/CEX, pick strike marked + forced)")
 
 
+def test_candidates_table_smoke():
+    try:
+        import numpy  # noqa: F401
+        import pandas  # noqa: F401
+        import matplotlib  # noqa: F401
+        from src.heatmap import render_candidates_table
+    except Exception as e:
+        print(f"skip candidates table smoke (deps unavailable: {e})")
+        return
+    import tempfile
+    lower_conv = [
+        ({"ticker": "META", "type": "put", "strike": 610.0, "otm": 0.4, "dte": 0,
+          "score": 73.2, "vol_oi": 3.7, "edge": "vanna"},),
+        ({"ticker": "NVDA", "type": "call", "strike": 210.0, "otm": 0.6, "dte": 0,
+          "score": 66.6, "vol_oi": 12.4, "edge": "flow"},),
+        # An event-risk row must render its gold "<label>-risk" edge.
+        ({"ticker": "AAPL", "type": "call", "strike": 205.0, "otm": 1.1, "dte": 2,
+          "score": 80.0, "vol_oi": 9.0, "edge": "flow",
+          "event_risk": True, "event_label": "WWDC"},),
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "candidates.png")
+        render_candidates_table(lower_conv, "morning", "2026-06-05", path)
+        assert os.path.exists(path) and os.path.getsize(path) > 5000
+        # Single-row + empty-ish edge still render without error.
+        one = [({"ticker": "SPY", "type": "call", "strike": 750.0, "otm": 0.5,
+                 "dte": 0, "score": 61.9, "vol_oi": 43.8, "edge": ""},)]
+        p2 = os.path.join(d, "one.png")
+        render_candidates_table(one, "close", "2026-06-05", p2)
+        assert os.path.exists(p2) and os.path.getsize(p2) > 5000
+    print("ok  render_candidates_table smoke (calls/puts, event-risk row, 1-row)")
+
+
 if __name__ == "__main__":
     test_vex_per_one_sigma()
     test_vex_rescale_is_selection_invariant()
@@ -143,4 +176,5 @@ if __name__ == "__main__":
     test_to_date_coercion()
     test_event_filter_manual()
     test_heatmap_triptych_smoke()
+    test_candidates_table_smoke()
     print("\nAll screener-extras tests passed.")

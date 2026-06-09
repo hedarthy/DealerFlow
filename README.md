@@ -108,8 +108,9 @@ methodology for higher-probability entries.
    own GEX/VEX heatmap.
 2. High-conviction pick #2 — same, for a **different** ticker (picks are deduped by
    underlying so #1 and #2 are never the same name).
-3. Additional candidates — table of ticker / type / strike / **OTM%** / DTE / score / vol-OI
-   / edge.
+3. Additional candidates — a rendered **PNG table** (ticker / type / strike / **OTM%** /
+   DTE / score / vol-OI / edge) so the columns stay aligned on mobile Discord instead of
+   wrapping the way a monospace code block does.
 
 ## Setup
 

@@ -38,6 +38,7 @@ jobs:
           path: |
             report.md
             gex_heatmap_*.png
+            candidates_table.png
       - name: Notify Discord on failure
         if: failure()
         env:
