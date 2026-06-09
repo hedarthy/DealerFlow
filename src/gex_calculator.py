@@ -5,7 +5,7 @@ the normal CDF/PDF come from ``math``), then aggregates them into per-strike
 exposure grids signed by dealer positioning (calls +1, puts -1).
 
 - GEX  (gamma exposure): dealer-delta $ shift per 1% spot move.
-- VEX  (vanna exposure): dealer-delta $ shift per 1 vol-point change in IV.
+- VEX  (vanna exposure): dealer-delta $ shift per 1.00 sigma (full vol point) IV move.
 - CEX  (charm exposure): dealer-delta $ shift per calendar day (decay).
 """
 
@@ -88,18 +88,21 @@ def contract_exposures(spot, strike, T, iv, oi, sign):
     """Dealer-signed gamma/vanna/charm exposure for a single contract, in the
     conventional desk units used across the dealer-positioning literature:
 
-    - GEX: $ of dealer delta per 1% spot move   (gamma * notional * S^2 * 0.01)
-    - VEX: $ of dealer delta per 1 vol-point     (vanna is per 1.00 sigma -> * 0.01)
-    - CEX: $ of dealer delta per calendar day     (charm is per year -> / 365.25)
+    - GEX: $ of dealer delta per 1% spot move    (gamma * notional * S^2 * 0.01)
+    - VEX: $ of dealer delta per 1.00 sigma move  (vanna is already per 1.00 sigma)
+    - CEX: $ of dealer delta per calendar day      (charm is per year -> / 365.25)
 
-    These are uniform positive rescales of the raw greeks, so per-grid rankings,
-    flip locations and normalised score components are unchanged — only the
-    displayed magnitudes become interpretable.
+    VEX is quoted per a full 1.00 change in implied vol (one whole sigma, e.g.
+    0.20 -> 1.20), matching the per-1.00-sigma convention common to vendor dealer-flow
+    maps and to the standalone SPY alert (spy_gex/). That is 100x a per-0.01-vol-point
+    figure, but it is a uniform positive rescale: per-grid rankings, flip locations and
+    the normalised score components are all unchanged — only the displayed magnitude
+    differs.
     """
     gamma, vanna, charm = bs_greeks(spot, strike, T, RISK_FREE, iv)
     notional = oi * 100 * sign
     gex = gamma * notional * spot * spot * 0.01   # per 1% spot move
-    vex = vanna * notional * spot * 0.01          # per 1 vol-point (sigma per 1.00)
+    vex = vanna * notional * spot                 # per 1.00 sigma (vanna already per 1.00)
     cex = charm * notional * spot / 365.25        # per calendar day (charm per year)
     return gex, vex, cex
 
@@ -216,6 +219,32 @@ def get_key_levels(gex_grid, spot=None):
     call_wall = max(positives, key=positives.get) if positives else 0.0
     put_wall = min(negatives, key=negatives.get) if negatives else 0.0
     return {"gamma_flip": float(flip), "call_wall": float(call_wall), "put_wall": float(put_wall)}
+
+
+def select_window_strikes(strikes, spot, n=25, must_include=None):
+    """Centered strike window: up to ``n`` strikes at/below ``spot`` plus up to ``n``
+    above it, returned as a single ascending list.
+
+    A strike exactly equal to spot is grouped with the at/below side. Having fewer than
+    ``n`` strikes on a side (deep ITM/OTM sparsity) is fine. ``must_include`` (e.g. the
+    traded strike) is force-added even if it falls outside the centered window, so a
+    near-but-not-nearest pick strike is always visible on its own heatmap. Used to frame
+    the dealer structure around spot the way the SPY heatmaps do (25 up / 25 down).
+    """
+    uniq = sorted({float(k) for k in strikes if k is not None})
+    if not uniq:
+        return [float(must_include)] if must_include else []
+    if not (spot and spot > 0):
+        win = uniq[: 2 * n]
+    else:
+        below = [k for k in uniq if k <= spot][-n:]
+        above = [k for k in uniq if k > spot][:n]
+        win = below + above
+    if must_include is not None:
+        mi = float(must_include)
+        if mi not in win:
+            win = sorted(set(win) | {mi})
+    return win
 
 
 def get_regime(gex_grid):

@@ -1,8 +1,14 @@
-name: Morning Update (9:10 AM ET)
+name: Morning Update (9:25 AM ET / 6:25 AM PT)
 on:
   schedule:
-    - cron: '10 13 * * 1-5'   # 09:10 ET during EDT (summer)
-    - cron: '10 14 * * 1-5'   # 09:10 ET during EST (winter)
+    # 09:25 ET = 6:25 AM Pacific, ~5 min before the 9:30 ET open. The :25 slot is
+    # deliberately off the top of the hour: GitHub's scheduler is best-effort and
+    # heavily congested at :00/:10, so an odd minute tends to dispatch sooner (it is
+    # still not a hard guarantee — see README). The market-day/hour gate keys off the
+    # cron's SCHEDULED ET hour (9), so this dual EDT/EST pair still collapses to
+    # exactly one real run per day year-round.
+    - cron: '25 13 * * 1-5'   # 09:25 ET during EDT (summer) = 6:25 AM PT
+    - cron: '25 14 * * 1-5'   # 09:25 ET during EST (winter) = 6:25 AM PT
   workflow_dispatch:
     inputs:
       force:
