@@ -16,6 +16,20 @@ from datetime import date, datetime, timedelta
 # (EST + EDT) UTC crons collapse to exactly one real run per day, year-round.
 INTENDED_ET_HOUR = {"morning": 9, "close": 16}
 
+# The full intended ET wall-clock (hour, minute) each mode targets. The morning
+# read is a pre-open/at-open momentum signal (09:25 ET, just before the 09:30
+# open); the close read snapshots the 16:00 ET closing chain. Used to measure how
+# late GitHub's best-effort scheduler actually started the run.
+INTENDED_ET_TIME = {"morning": (9, 25), "close": (16, 0)}
+
+# How many minutes past the intended ET time a run may still post before its
+# signal is considered stale and dropped. The morning window is tight because the
+# whole point is a fresh open read — by the time the tape has moved an hour the
+# entry/levels are wrong (a 3-hour-late post is exactly the bug this guards). The
+# close window is wider: it snapshots the closing chain, which doesn't go stale
+# the moment the bell rings, and no later run will cover it.
+FRESHNESS_MIN = {"morning": 30, "close": 45}
+
 
 def easter(year: int) -> date:
     """Gregorian Easter Sunday (Anonymous/Meeus computus)."""
@@ -115,3 +129,14 @@ def cron_scheduled_et_hour(cron_str: str, on_date: date):
         return utc_dt.astimezone(ZoneInfo("America/New_York")).hour
     except Exception:
         return None
+
+
+def minutes_late(mode: str, now_et: datetime) -> float:
+    """Minutes ``now_et`` is past ``mode``'s intended ET time on the same date.
+
+    Negative means the run started early (before the intended time). Used to drop
+    a run that GitHub's scheduler fired so late the signal is already stale.
+    """
+    ih, im = INTENDED_ET_TIME[mode]
+    intended = now_et.replace(hour=ih, minute=im, second=0, microsecond=0)
+    return (now_et - intended).total_seconds() / 60.0

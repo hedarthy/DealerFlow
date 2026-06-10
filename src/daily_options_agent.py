@@ -20,7 +20,10 @@ from src.strategy_generator import generate_strategy
 from src.utils import load_previous_close, save_current_close, send_discord
 from src.cboe_source import fetch_cboe
 from src.timeutil import eastern_now
-from src.market_calendar import is_trading_day, cron_scheduled_et_hour, INTENDED_ET_HOUR
+from src.market_calendar import (
+    is_trading_day, cron_scheduled_et_hour, INTENDED_ET_HOUR, INTENDED_ET_TIME,
+    FRESHNESS_MIN, minutes_late,
+)
 from src.event_calendar import ticker_event_dates, event_in_window
 from src.heatmap import render_pick_triptych, render_candidates_table
 
@@ -302,31 +305,43 @@ def main(mode: str, force: bool = False):
     et = eastern_now()
     if not force:
         target_hour = INTENDED_ET_HOUR[mode]
+        ih, im = INTENDED_ET_TIME[mode]
         if not is_trading_day(et.date()):
             print(f"⏭️  SKIPPED: {et.date()} ({et:%A}) is not a US market trading day "
                   f"(weekend or NYSE holiday). mode={mode}.")
             return
         cron = os.getenv("SCHEDULED_CRON", "").strip()
         sched_hour = cron_scheduled_et_hour(cron, et.date()) if cron else None
+        late = minutes_late(mode, et)
+        allow = FRESHNESS_MIN[mode]
         if sched_hour is not None:
-            # Decide eligibility from the cron's SCHEDULED ET hour, not the
+            # Decide which cron OWNS the run from its SCHEDULED ET hour, not the
             # runner's actual start time. The off-season (wrong-DST) cron is
-            # scheduled for a different ET hour and self-skips even if GitHub
-            # delays it into the intended hour; the correct cron owns the run
-            # even if it starts late.
+            # scheduled for a different ET hour and self-skips, so the dual
+            # EST/EDT crons can never double-post.
             if sched_hour != target_hour:
                 print(f"⏭️  SKIPPED: cron '{cron}' is scheduled for {sched_hour:02d}:00 ET "
                       f"(off-DST duplicate), not the intended {target_hour:02d}:00 ET. The "
                       f"matching cron handles today's {mode} run.")
                 return
-            if et.hour != target_hour:
-                print(f"⚠️  NOTE: the {target_hour:02d}:00 ET {mode} cron started late "
-                      f"(now {et:%H:%M} ET) — GitHub scheduler latency; proceeding anyway.")
-        elif et.hour != target_hour:
-            # No cron context (a non-forced manual run): fall back to the
-            # intended-hour gate on the actual ET clock.
-            print(f"⏭️  SKIPPED: {mode} run is gated to {target_hour:02d}:00 ET, but it is "
-                  f"currently {et:%H:%M} ET (hour {et.hour}). Use --force to override.")
+            # The correct cron owns today's run — but GitHub's scheduler is
+            # best-effort and can fire it hours late. A morning momentum signal is
+            # only valid near the open, so drop it rather than post a stale read
+            # against a tape that has already moved.
+            if late > allow:
+                print(f"⏭️  SKIPPED: the {mode} cron fired {late:.0f} min past its intended "
+                      f"{ih:02d}:{im:02d} ET slot (> {allow} min freshness window) — GitHub "
+                      f"scheduler latency. The signal would be stale, so it is dropped rather "
+                      f"than posted late.")
+                return
+            if late > 0:
+                print(f"⚠️  NOTE: the {mode} cron started {late:.0f} min late (now {et:%H:%M} "
+                      f"ET) but within the {allow} min freshness window — proceeding.")
+        elif not (-allow <= late <= allow):
+            # No cron context (a non-forced manual run): fall back to a freshness
+            # window around the intended ET time on the actual clock.
+            print(f"⏭️  SKIPPED: {mode} run is gated to {ih:02d}:{im:02d} ET ±{allow} min, but "
+                  f"it is currently {et:%H:%M} ET ({late:+.0f} min). Use --force to override.")
             return
     print(f"🚀 Running {mode.upper()} mode at {et} ET")
     results = []
