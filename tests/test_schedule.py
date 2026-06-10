@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.market_calendar import (
     is_trading_day, nyse_holidays, cron_scheduled_et_hour, INTENDED_ET_HOUR,
+    INTENDED_ET_TIME, FRESHNESS_MIN, minutes_late,
 )
 
 # Known NYSE full-closure holidays (verified against the published calendars),
@@ -114,9 +115,36 @@ def test_latency_does_not_double_post_or_miss():
     print("ok  latency cannot cause a double-post or a silent miss")
 
 
+def test_freshness_window_drops_stale_late_runs():
+    """A correct cron that GitHub fires far past its slot must be DROPPED, not posted
+    late — the bug where the 09:25 ET morning run posted ~3h late at 12:48 ET."""
+    from datetime import datetime
+    d = date(2026, 6, 10)  # a summer trading weekday
+
+    # minutes_late measures lateness vs the intended ET wall-clock, same date.
+    assert minutes_late("morning", datetime(d.year, d.month, d.day, 9, 25)) == 0
+    assert minutes_late("morning", datetime(d.year, d.month, d.day, 9, 48)) == 23   # within window
+    assert minutes_late("morning", datetime(d.year, d.month, d.day, 12, 48)) == 203  # the real incident
+    assert minutes_late("close", datetime(d.year, d.month, d.day, 16, 0)) == 0
+    assert minutes_late("close", datetime(d.year, d.month, d.day, 16, 50)) == 50
+
+    # The gate decision: proceed iff late <= the mode's freshness allowance.
+    def fresh(mode, hh, mm):
+        return minutes_late(mode, datetime(d.year, d.month, d.day, hh, mm)) <= FRESHNESS_MIN[mode]
+
+    assert fresh("morning", 9, 25)      # on time
+    assert fresh("morning", 9, 48)      # 23 min late -> still fresh (<= 30)
+    assert not fresh("morning", 9, 56)  # 31 min late -> stale
+    assert not fresh("morning", 12, 48)  # 3h late (the incident) -> DROPPED
+    assert fresh("close", 16, 44)       # 44 min late -> fresh (<= 45)
+    assert not fresh("close", 16, 46)   # 46 min late -> stale
+    print("ok  freshness window drops stale GitHub-delayed runs (no 3h-late post)")
+
+
 if __name__ == "__main__":
     test_known_holidays()
     test_trading_and_nontrading_days()
     test_dual_cron_collapses_to_one_run()
     test_latency_does_not_double_post_or_miss()
+    test_freshness_window_drops_stale_late_runs()
     print("\nAll schedule tests passed.")
